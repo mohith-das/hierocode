@@ -17,6 +17,6 @@ def run_draft_workers(
                 res = future.result()
                 if res:
                     candidates.append(res)
-            except Exception as e:
+            except Exception:
                 pass # In v0.1 we can just ignore failing drafts if we get at least one
     return candidates

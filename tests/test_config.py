@@ -1,6 +1,4 @@
 from hierocode.models.schemas import HierocodeConfig
-import pytest
-from pydantic import ValidationError
 
 def test_config_parsing_defaults():
     config = HierocodeConfig()

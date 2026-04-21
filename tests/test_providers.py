@@ -1,7 +1,5 @@
-import pytest
 from hierocode.providers.ollama import OllamaProvider
-from hierocode.models.schemas import ProviderConfig, AuthConfig
-import httpx
+from hierocode.models.schemas import ProviderConfig
 
 def test_provider_initialization():
     conf = ProviderConfig(type="ollama", base_url="http://test")

@@ -1,7 +1,7 @@
 import typer
 from hierocode.config import create_default_config, load_config
 from hierocode.utils.console import log_info, log_error, log_success, log_warning, console
-from hierocode.exceptions import ConfigError, ProviderConnectionError
+from hierocode.exceptions import ConfigError
 from hierocode.providers import get_provider
 from hierocode import __version__
 from hierocode.runtime.resources import get_cpu_count, get_total_ram_gb, get_available_ram_gb

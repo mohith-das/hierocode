@@ -1,4 +1,4 @@
-from hierocode.runtime.resources import get_cpu_count, get_total_ram_gb, get_available_ram_gb
+from hierocode.runtime.resources import get_cpu_count, get_available_ram_gb
 from hierocode.models.schemas import ParallelizationConfig
 from hierocode.providers.base import BaseProvider
 

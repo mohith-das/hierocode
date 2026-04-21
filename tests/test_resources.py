@@ -1,4 +1,3 @@
-from hierocode.runtime.resources import get_cpu_count
 from hierocode.runtime.recommendations import suggest_workers
 from hierocode.models.schemas import ParallelizationConfig
 from hierocode.providers.base import BaseProvider
