@@ -1,10 +1,15 @@
-"""Shell handler for the /apply command (W23)."""
+"""Shell handler for the /apply command."""
 
 from __future__ import annotations
 
 from hierocode.broker.patcher import PatchParseError, apply_patch, parse_diff
 from hierocode.cli_shell import HandlerContext, HandlerResult
-from hierocode.shell_handlers._prompts import ApplyChoice, prompt_apply_choice
+from hierocode.shell_handlers._prompts import (
+    ApplyChoice,
+    BatchApplyChoice,
+    prompt_apply_batch,
+    prompt_apply_choice,
+)
 
 
 def handle_apply(ctx: HandlerContext) -> HandlerResult:
@@ -23,13 +28,48 @@ def handle_apply(ctx: HandlerContext) -> HandlerResult:
         ctx.console.print("Diff is empty.")
         return "continue"
 
-    ctx.console.print(f"\n[bold]Last diff touches {len(patches)} file(s):[/bold]")
-    for p in patches:
-        ctx.console.print(
-            f"  - {p.path}  ({p.action.value}, "
-            f"+{p.line_count_added} / -{p.line_count_removed})"
-        )
+    # Auto-apply gate: session-sticky OR policy-level
+    session_sticky = getattr(ctx.session, "auto_apply_session", False)
+    policy_auto = getattr(ctx.config.policy, "auto_apply", False)
 
+    if session_sticky or policy_auto:
+        _apply_all(ctx, patches, reason="auto-apply")
+        return "continue"
+
+    # Default path: batch prompt
+    result = prompt_apply_batch(patches)
+    if result.choice is BatchApplyChoice.ABORT:
+        ctx.console.print("[yellow]Aborted.[/yellow]")
+        return "continue"
+    if result.choice is BatchApplyChoice.YES_ALL:
+        if result.make_sticky:
+            ctx.session.auto_apply_session = True
+            ctx.console.print("[dim]Auto-apply enabled for this session.[/dim]")
+        _apply_all(ctx, patches, reason="batch yes")
+        return "continue"
+    # REVIEW → per-file fallback (today's flow)
+    _apply_per_file(ctx, patches)
+    return "continue"
+
+
+def _apply_all(ctx: HandlerContext, patches: list, reason: str) -> None:
+    """Apply every patch without prompting. Print a summary."""
+    applied = errors = 0
+    for p in patches:
+        r = apply_patch(p, ctx.session.repo_root)
+        if r.status == "applied":
+            ctx.console.print(f"  [green]wrote[/green] {p.path}")
+            applied += 1
+        else:
+            ctx.console.print(f"  [red]error[/red] {p.path}: {r.message}")
+            errors += 1
+    ctx.console.print(
+        f"\n[bold]Summary ({reason}):[/bold] applied={applied} errors={errors}"
+    )
+
+
+def _apply_per_file(ctx: HandlerContext, patches: list) -> None:
+    """Per-file confirmation loop — reused unchanged for the REVIEW branch."""
     skip_confirmation = False
     applied = 0
     skipped = 0
@@ -54,7 +94,6 @@ def handle_apply(ctx: HandlerContext) -> HandlerResult:
         if choice == ApplyChoice.YES_ALL:
             skip_confirmation = True
 
-        # YES or YES_ALL: apply the patch.
         result = apply_patch(p, ctx.session.repo_root)
         if result.status == "applied":
             ctx.console.print(f"  [green]wrote[/green] {p.path}")
@@ -66,7 +105,6 @@ def handle_apply(ctx: HandlerContext) -> HandlerResult:
     ctx.console.print(
         f"\n[bold]Summary:[/bold] applied={applied} skipped={skipped} errors={errors}"
     )
-    return "continue"
 
 
 def _confirm(console, patch) -> str:
@@ -93,5 +131,5 @@ def register_all(registry) -> None:
     registry.register(
         "apply",
         handle_apply,
-        "Apply the last diff to disk with per-file confirmation.",
+        "Apply the last diff to disk — batch prompt, then write confirmed files.",
     )

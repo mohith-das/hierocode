@@ -497,3 +497,105 @@ class TestRoleRoutingExplorationSchema:
             allowed_tools=["Read", "Grep"],
         )
         assert r_tools.allowed_tools == ["Read", "Grep"]
+
+
+# ---------------------------------------------------------------------------
+# auto_apply — build_config_yaml tests
+# ---------------------------------------------------------------------------
+
+
+class TestBuildConfigYamlAutoApply:
+    def test_build_config_yaml_omits_auto_apply_when_false(self):
+        """detection.auto_apply=False → rendered YAML does NOT contain 'auto_apply:'."""
+        from hierocode.cli_wizard import build_config_yaml
+
+        detection = _minimal_detection()
+        detection.auto_apply = False
+        yaml_str = build_config_yaml(detection)
+
+        assert "auto_apply:" not in yaml_str
+
+    def test_build_config_yaml_emits_auto_apply_when_true(self):
+        """detection.auto_apply=True → YAML under policy: contains 'auto_apply: true'."""
+        from hierocode.cli_wizard import build_config_yaml
+
+        detection = _minimal_detection()
+        detection.auto_apply = True
+        yaml_str = build_config_yaml(detection)
+        parsed = yaml.safe_load(yaml_str)
+
+        assert "auto_apply:" in yaml_str
+        assert parsed["policy"]["auto_apply"] is True
+
+    def test_build_config_yaml_auto_apply_true_passes_pydantic(self):
+        """YAML with auto_apply: true must pass HierocodeConfig validation."""
+        from hierocode.cli_wizard import build_config_yaml
+        from hierocode.models.schemas import HierocodeConfig
+
+        detection = _minimal_detection()
+        detection.auto_apply = True
+        parsed = yaml.safe_load(build_config_yaml(detection))
+
+        config = HierocodeConfig(**parsed)
+        assert config.policy.auto_apply is True
+
+
+# ---------------------------------------------------------------------------
+# auto_apply — run_wizard TTY prompt tests
+# ---------------------------------------------------------------------------
+
+
+class TestRunWizardAutoApplyPrompt:
+    def test_run_wizard_prompts_for_auto_apply_when_tty(self, monkeypatch, tmp_path):
+        """isatty True + input 'y' → detection.auto_apply is True."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        config_file = tmp_path / ".hierocode.yaml"
+        monkeypatch.setattr("hierocode.cli_wizard.get_config_path", lambda: config_file)
+
+        # Both wizard prompts (active_exploration skipped — planner=ollama, not cli)
+        # so only the auto_apply prompt fires.
+        call_count = {"n": 0}
+
+        def _fake_input(prompt: str) -> str:
+            call_count["n"] += 1
+            return "y"
+
+        with (
+            patch("shutil.which", return_value=None),
+            patch("httpx.Client", return_value=_make_httpx_client_mock(False)),
+            patch("hierocode.cli_wizard.get_total_ram_gb", return_value=16.0),
+            patch("sys.stdin") as mock_stdin,
+            patch("builtins.input", side_effect=_fake_input),
+        ):
+            mock_stdin.isatty.return_value = True
+            import warnings
+            from hierocode.cli_wizard import run_wizard
+
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                detection, _ = run_wizard(write=False)
+
+        assert detection.auto_apply is True
+        assert call_count["n"] >= 1
+
+    def test_run_wizard_omits_prompt_when_not_tty(self, monkeypatch):
+        """isatty False → auto_apply prompt not called; detection.auto_apply stays False."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+        with (
+            patch("shutil.which", return_value=None),
+            patch("httpx.Client", return_value=_make_httpx_client_mock(False)),
+            patch("hierocode.cli_wizard.get_total_ram_gb", return_value=16.0),
+            patch("sys.stdin") as mock_stdin,
+            patch("builtins.input") as mock_input,
+        ):
+            mock_stdin.isatty.return_value = False
+            import warnings
+            from hierocode.cli_wizard import run_wizard
+
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                detection, _ = run_wizard(write=False)
+
+        mock_input.assert_not_called()
+        assert detection.auto_apply is False

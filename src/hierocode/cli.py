@@ -299,6 +299,8 @@ def run(
     repo_root: str = typer.Option(".", "--repo", help="Repo root."),
     estimate: bool = typer.Option(False, "--estimate", "-e",
                                   help="Predict cost / message quota and exit without running."),
+    apply: bool = typer.Option(False, "--apply", "-a",
+                               help="Write drafter's diffs to disk immediately, no prompt."),
 ):
     """Plan, draft, and QA an entire task end-to-end."""
     try:
@@ -372,6 +374,34 @@ def run(
             if u.diff:
                 console.print(u.diff if u.diff else "[dim](no changes)[/dim]")
 
+        if apply or conf.policy.auto_apply:
+            from hierocode.broker.patcher import PatchParseError, apply_patch, parse_diff
+
+            total_applied = total_errors = 0
+            for u in result.units:
+                if not u.diff:
+                    continue
+                try:
+                    patches = parse_diff(u.diff)
+                except PatchParseError as e:
+                    log_error(f"{u.unit_id}: diff parse error: {e}")
+                    total_errors += 1
+                    continue
+                for p in patches:
+                    r = apply_patch(p, repo_root)
+                    if r.status == "applied":
+                        log_info(f"[green]wrote[/green] {p.path}")
+                        total_applied += 1
+                    else:
+                        log_error(f"{p.path}: {r.message}")
+                        total_errors += 1
+            if total_errors:
+                log_warning(
+                    f"Apply done — {total_applied} files written, {total_errors} errors."
+                )
+            else:
+                log_success(f"Applied {total_applied} file(s).")
+
     except Exception as e:
         log_error(str(e))
         raise typer.Exit(code=1)
@@ -382,6 +412,8 @@ def draft(
     task: str = typer.Option(..., "--task", "-t", help="The coding task."),
     filepath: str = typer.Option(..., "--file", "-f", help="Target file to modify."),
     drafter_model: str = typer.Option(None, "--drafter-model", help="Override drafter model."),
+    apply: bool = typer.Option(False, "--apply", "-a",
+                               help="Write the drafted diff to disk immediately, no prompt."),
 ):
     """Draft a single-file patch using the drafter role. Single-file escape hatch for `run`."""
     try:
@@ -421,6 +453,33 @@ def draft(
 
         console.print("\n[bold]Proposed Patch:[/bold]")
         console.print(diff if diff else "No changes proposed.")
+
+        if apply or conf.policy.auto_apply:
+            if diff:
+                from hierocode.broker.patcher import PatchParseError, apply_patch, parse_diff
+
+                try:
+                    patches = parse_diff(diff)
+                except PatchParseError as e:
+                    log_error(f"diff parse error: {e}")
+                    return
+                total_applied = total_errors = 0
+                for p in patches:
+                    r = apply_patch(p, ".")
+                    if r.status == "applied":
+                        log_info(f"[green]wrote[/green] {p.path}")
+                        total_applied += 1
+                    else:
+                        log_error(f"{p.path}: {r.message}")
+                        total_errors += 1
+                if total_errors:
+                    log_warning(
+                        f"Apply done — {total_applied} files written, {total_errors} errors."
+                    )
+                else:
+                    log_success(f"Applied {total_applied} file(s).")
+            else:
+                log_info("No diff to apply.")
 
     except Exception as e:
         log_error(str(e))

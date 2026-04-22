@@ -39,6 +39,7 @@ class SessionState:
     last_diff: Optional[str] = None  # raw unified diff string
     task_history: list[str] = field(default_factory=list)
     usage: UsageAccumulator = field(default_factory=UsageAccumulator)
+    auto_apply_session: bool = False
 
 
 @dataclass

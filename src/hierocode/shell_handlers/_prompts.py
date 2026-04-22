@@ -7,11 +7,16 @@ prompt_toolkit internals.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import Enum
+from typing import TYPE_CHECKING, Iterable
 
 from prompt_toolkit import PromptSession
 from rich.console import Console
 from rich.panel import Panel
+
+if TYPE_CHECKING:
+    from hierocode.broker.patcher import FilePatch
 
 
 class ApplyChoice(str, Enum):
@@ -21,6 +26,22 @@ class ApplyChoice(str, Enum):
     YES_ALL = "yes_all"  # apply this and don't ask for remaining files this session
     SKIP = "skip"  # skip this file, keep asking for the rest
     ABORT = "abort"  # stop processing all remaining files
+
+
+class BatchApplyChoice(str, Enum):
+    """Possible responses to the batch apply prompt."""
+
+    YES_ALL = "yes_all"
+    REVIEW = "review"
+    ABORT = "abort"
+
+
+@dataclass
+class BatchApplyResult:
+    """Result of the batch apply prompt."""
+
+    choice: BatchApplyChoice
+    make_sticky: bool = False  # True if user picked "yes, don't ask again this session"
 
 
 class EscalationChoice(str, Enum):
@@ -70,6 +91,56 @@ def prompt_apply_choice(
         return ApplyChoice.ABORT
     # "n", blank, or anything else → safe default
     return ApplyChoice.SKIP
+
+
+def prompt_apply_batch(patches: "Iterable[FilePatch]") -> BatchApplyResult:
+    """Show a single bordered panel listing all pending patches and ask once.
+
+    Renders a rich.panel.Panel with one row per file showing path, action, and
+    '+added -removed'. Prompts with single-char input: y / r / n.
+    On YES_ALL, follows with a sticky-session prompt.
+    Returns BatchApplyResult(ABORT) on Ctrl-C, EOFError, or unknown input.
+    """
+    patch_list = list(patches)
+    n = len(patch_list)
+
+    rows = "\n".join(
+        f"  {p.path}  ({p.action.value})  "
+        f"[green]+{p.line_count_added}[/green] [red]-{p.line_count_removed}[/red]"
+        for p in patch_list
+    )
+    body = (
+        f"{rows}\n"
+        "\n"
+        "  [bold]y[/bold]   yes, apply all\n"
+        "  [bold]r[/bold]   review per-file\n"
+        "  [bold]n[/bold]   no, abort"
+    )
+    _console.print(Panel(body, title=f"Apply {n} file(s)", border_style="blue"))
+
+    session: PromptSession = PromptSession()
+    try:
+        raw = session.prompt("> ").strip().lower()
+    except (KeyboardInterrupt, EOFError):
+        return BatchApplyResult(BatchApplyChoice.ABORT)
+
+    if raw == "r":
+        return BatchApplyResult(BatchApplyChoice.REVIEW)
+
+    if raw != "y":
+        # empty, "n", or anything else → safe default
+        return BatchApplyResult(BatchApplyChoice.ABORT)
+
+    # YES_ALL — offer sticky session opt-in
+    _console.print("Auto-apply for the rest of this session? [y/N]: ", end="")
+    sticky_session: PromptSession = PromptSession()
+    try:
+        sticky_raw = sticky_session.prompt("").strip().lower()
+    except (KeyboardInterrupt, EOFError):
+        sticky_raw = ""
+
+    make_sticky = sticky_raw == "y"
+    return BatchApplyResult(BatchApplyChoice.YES_ALL, make_sticky=make_sticky)
 
 
 def prompt_escalation_approval(

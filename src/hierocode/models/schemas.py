@@ -52,6 +52,7 @@ class PolicyConfig(BaseModel):
     max_revisions_per_unit: int = 2
     max_escalations_per_task: int = 3
     warn_before_escalation: bool = True
+    auto_apply: bool = False
 
 
 class TUIConfig(BaseModel):

@@ -5,15 +5,17 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-
 from hierocode.broker.patcher import ApplyResult, FilePatch, PatchAction, PatchParseError
 from hierocode.cli_shell import HandlerContext, HandlerRegistry, SessionState
-from hierocode.models.schemas import HierocodeConfig
-from hierocode.shell_handlers._prompts import ApplyChoice
-from hierocode.shell_handlers.apply import _confirm, handle_apply, register_all
+from hierocode.models.schemas import HierocodeConfig, PolicyConfig
+from hierocode.shell_handlers._prompts import ApplyChoice, BatchApplyChoice, BatchApplyResult
+from hierocode.shell_handlers.apply import _apply_per_file, _confirm, handle_apply, register_all
 
-# Patch target for the new prompt helper
+# Patch targets
 _PROMPT_APPLY = "hierocode.shell_handlers.apply.prompt_apply_choice"
+_PROMPT_BATCH = "hierocode.shell_handlers.apply.prompt_apply_batch"
+_APPLY_PATCH = "hierocode.shell_handlers.apply.apply_patch"
+_PARSE_DIFF = "hierocode.shell_handlers.apply.parse_diff"
 
 
 # ---------------------------------------------------------------------------
@@ -32,14 +34,17 @@ def _make_ctx(
     tmp_path: Path,
     last_diff: str | None = None,
     console: MagicMock | None = None,
+    config: HierocodeConfig | None = None,
 ) -> HandlerContext:
     """Build a HandlerContext with optional last_diff and mock console."""
     if console is None:
         console = MagicMock()
+    if config is None:
+        config = HierocodeConfig()
     return HandlerContext(
         args=[],
         session=_make_session(tmp_path, last_diff),
-        config=HierocodeConfig(),
+        config=config,
         console=console,
         reload_config=lambda: HierocodeConfig(),
     )
@@ -56,7 +61,7 @@ def _make_patch(path: str = "foo.py", action: PatchAction = PatchAction.MODIFY) 
 
 
 # ---------------------------------------------------------------------------
-# handle_apply tests
+# handle_apply — guard tests
 # ---------------------------------------------------------------------------
 
 
@@ -79,10 +84,7 @@ class TestApplyWithParseError:
         console = MagicMock()
         ctx = _make_ctx(tmp_path, last_diff="not a real diff\n", console=console)
 
-        with patch(
-            "hierocode.shell_handlers.apply.parse_diff",
-            side_effect=PatchParseError("bad diff"),
-        ):
+        with patch(_PARSE_DIFF, side_effect=PatchParseError("bad diff")):
             result = handle_apply(ctx)
 
         assert result == "continue"
@@ -96,7 +98,7 @@ class TestApplyEmptyParsedDiff:
         console = MagicMock()
         ctx = _make_ctx(tmp_path, last_diff="   \n", console=console)
 
-        with patch("hierocode.shell_handlers.apply.parse_diff", return_value=[]):
+        with patch(_PARSE_DIFF, return_value=[]):
             result = handle_apply(ctx)
 
         assert result == "continue"
@@ -104,56 +106,171 @@ class TestApplyEmptyParsedDiff:
         assert "empty" in print_calls.lower()
 
 
-class TestApplyWalksThroughEachFile:
-    def test_apply_walks_through_each_file(self, tmp_path):
-        """With 2 patches and YES for each, apply_patch is called twice and both applied."""
+# ---------------------------------------------------------------------------
+# handle_apply — auto-apply gates
+# ---------------------------------------------------------------------------
+
+
+class TestApplyAutoSessionStickySkipsPrompts:
+    def test_session_sticky_skips_batch_prompt(self, tmp_path):
+        """session.auto_apply_session=True → prompt_apply_batch NEVER called; all patches applied."""
+        patches = [_make_patch("a.py"), _make_patch("b.py")]
+        apply_ok = ApplyResult(path="x", status="applied")
+        console = MagicMock()
+        ctx = _make_ctx(tmp_path, last_diff="dummy", console=console)
+        ctx.session.auto_apply_session = True
+
+        with patch(_PARSE_DIFF, return_value=patches):
+            with patch(_APPLY_PATCH, return_value=apply_ok) as mock_apply:
+                with patch(_PROMPT_BATCH) as mock_batch:
+                    result = handle_apply(ctx)
+
+        assert result == "continue"
+        mock_batch.assert_not_called()
+        assert mock_apply.call_count == 2
+
+
+class TestApplyPolicyAutoApplySkipsPrompts:
+    def test_policy_auto_apply_skips_batch_prompt(self, tmp_path):
+        """config.policy.auto_apply=True → prompt_apply_batch NEVER called."""
+        patches = [_make_patch("a.py")]
+        apply_ok = ApplyResult(path="a.py", status="applied")
+        console = MagicMock()
+        config = HierocodeConfig(policy=PolicyConfig(auto_apply=True))
+        ctx = _make_ctx(tmp_path, last_diff="dummy", console=console, config=config)
+
+        with patch(_PARSE_DIFF, return_value=patches):
+            with patch(_APPLY_PATCH, return_value=apply_ok) as mock_apply:
+                with patch(_PROMPT_BATCH) as mock_batch:
+                    result = handle_apply(ctx)
+
+        assert result == "continue"
+        mock_batch.assert_not_called()
+        assert mock_apply.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# handle_apply — batch prompt path
+# ---------------------------------------------------------------------------
+
+
+class TestApplyBatchYesAllNoSticky:
+    def test_patches_applied_session_flag_stays_false(self, tmp_path):
+        """Batch YES_ALL no-sticky → patches applied, session.auto_apply_session stays False."""
         patches = [_make_patch("a.py"), _make_patch("b.py")]
         apply_ok = ApplyResult(path="x", status="applied")
         console = MagicMock()
         ctx = _make_ctx(tmp_path, last_diff="dummy", console=console)
 
-        with patch("hierocode.shell_handlers.apply.parse_diff", return_value=patches):
-            with patch(
-                "hierocode.shell_handlers.apply.apply_patch", return_value=apply_ok
-            ) as mock_apply:
-                with patch(_PROMPT_APPLY, return_value=ApplyChoice.YES):
+        batch_result = BatchApplyResult(choice=BatchApplyChoice.YES_ALL, make_sticky=False)
+
+        with patch(_PARSE_DIFF, return_value=patches):
+            with patch(_APPLY_PATCH, return_value=apply_ok) as mock_apply:
+                with patch(_PROMPT_BATCH, return_value=batch_result):
                     result = handle_apply(ctx)
 
         assert result == "continue"
         assert mock_apply.call_count == 2
+        assert ctx.session.auto_apply_session is False
 
 
-class TestApplySkipPerFile:
-    def test_apply_skip_per_file(self, tmp_path):
-        """When prompt returns SKIP, apply_patch is NOT called for that patch."""
-        patches = [_make_patch("skip_me.py")]
+class TestApplyBatchYesAllWithSticky:
+    def test_patches_applied_session_flag_set_true(self, tmp_path):
+        """Batch YES_ALL sticky=True → patches applied AND session.auto_apply_session=True."""
+        patches = [_make_patch("a.py")]
+        apply_ok = ApplyResult(path="a.py", status="applied")
         console = MagicMock()
         ctx = _make_ctx(tmp_path, last_diff="dummy", console=console)
 
-        with patch("hierocode.shell_handlers.apply.parse_diff", return_value=patches):
-            with patch("hierocode.shell_handlers.apply.apply_patch") as mock_apply:
-                with patch(_PROMPT_APPLY, return_value=ApplyChoice.SKIP):
+        batch_result = BatchApplyResult(choice=BatchApplyChoice.YES_ALL, make_sticky=True)
+
+        with patch(_PARSE_DIFF, return_value=patches):
+            with patch(_APPLY_PATCH, return_value=apply_ok):
+                with patch(_PROMPT_BATCH, return_value=batch_result):
+                    result = handle_apply(ctx)
+
+        assert result == "continue"
+        assert ctx.session.auto_apply_session is True
+        print_calls = " ".join(str(c) for c in console.print.call_args_list)
+        assert "Auto-apply enabled" in print_calls
+
+
+class TestApplyBatchReviewDropsIntoPerFile:
+    def test_review_calls_per_file_prompt(self, tmp_path):
+        """Batch REVIEW → prompt_apply_choice called once per patch."""
+        patches = [_make_patch("a.py"), _make_patch("b.py")]
+        apply_ok = ApplyResult(path="x", status="applied")
+        console = MagicMock()
+        ctx = _make_ctx(tmp_path, last_diff="dummy", console=console)
+
+        batch_result = BatchApplyResult(choice=BatchApplyChoice.REVIEW)
+
+        with patch(_PARSE_DIFF, return_value=patches):
+            with patch(_APPLY_PATCH, return_value=apply_ok):
+                with patch(_PROMPT_BATCH, return_value=batch_result):
+                    with patch(_PROMPT_APPLY, return_value=ApplyChoice.YES) as mock_per_file:
+                        result = handle_apply(ctx)
+
+        assert result == "continue"
+        assert mock_per_file.call_count == 2
+
+
+class TestApplyBatchAbortWritesNothing:
+    def test_abort_does_not_call_apply_patch(self, tmp_path):
+        """Batch ABORT → apply_patch NEVER called."""
+        patches = [_make_patch("a.py")]
+        console = MagicMock()
+        ctx = _make_ctx(tmp_path, last_diff="dummy", console=console)
+
+        batch_result = BatchApplyResult(choice=BatchApplyChoice.ABORT)
+
+        with patch(_PARSE_DIFF, return_value=patches):
+            with patch(_APPLY_PATCH) as mock_apply:
+                with patch(_PROMPT_BATCH, return_value=batch_result):
                     result = handle_apply(ctx)
 
         assert result == "continue"
         mock_apply.assert_not_called()
+        print_calls = " ".join(str(c) for c in console.print.call_args_list)
+        assert "bort" in print_calls.lower() or "Aborted" in print_calls
 
-    def test_apply_skip_via_s_response(self, tmp_path):
-        """SKIP choice leaves apply_patch uncalled."""
-        patches = [_make_patch("also_skip.py")]
+
+# ---------------------------------------------------------------------------
+# _apply_per_file — REVIEW branch regression tests
+# ---------------------------------------------------------------------------
+
+
+class TestApplyPerFileWalksThroughEachFile:
+    def test_apply_per_file_yes_applies_all(self, tmp_path):
+        """With 2 patches and YES for each, apply_patch is called twice."""
+        patches = [_make_patch("a.py"), _make_patch("b.py")]
+        apply_ok = ApplyResult(path="x", status="applied")
         console = MagicMock()
         ctx = _make_ctx(tmp_path, last_diff="dummy", console=console)
 
-        with patch("hierocode.shell_handlers.apply.parse_diff", return_value=patches):
-            with patch("hierocode.shell_handlers.apply.apply_patch") as mock_apply:
-                with patch(_PROMPT_APPLY, return_value=ApplyChoice.SKIP):
-                    handle_apply(ctx)
+        with patch(_APPLY_PATCH, return_value=apply_ok) as mock_apply:
+            with patch(_PROMPT_APPLY, return_value=ApplyChoice.YES):
+                _apply_per_file(ctx, patches)
+
+        assert mock_apply.call_count == 2
+
+
+class TestApplyPerFileSkipPerFile:
+    def test_skip_does_not_call_apply_patch(self, tmp_path):
+        """SKIP leaves apply_patch uncalled."""
+        patches = [_make_patch("skip_me.py")]
+        console = MagicMock()
+        ctx = _make_ctx(tmp_path, last_diff="dummy", console=console)
+
+        with patch(_APPLY_PATCH) as mock_apply:
+            with patch(_PROMPT_APPLY, return_value=ApplyChoice.SKIP):
+                _apply_per_file(ctx, patches)
 
         mock_apply.assert_not_called()
 
 
-class TestApplyQuitAbortsRemaining:
-    def test_apply_quit_aborts_remaining(self, tmp_path):
+class TestApplyPerFileQuitAbortsRemaining:
+    def test_abort_on_second_patch_leaves_third_untouched(self, tmp_path):
         """ABORT on the second patch leaves the third patch untouched."""
         patches = [_make_patch("a.py"), _make_patch("b.py"), _make_patch("c.py")]
         apply_ok = ApplyResult(path="a.py", status="applied")
@@ -162,45 +279,34 @@ class TestApplyQuitAbortsRemaining:
 
         choices = iter([ApplyChoice.YES, ApplyChoice.ABORT, ApplyChoice.YES])
 
-        with patch("hierocode.shell_handlers.apply.parse_diff", return_value=patches):
-            with patch(
-                "hierocode.shell_handlers.apply.apply_patch", return_value=apply_ok
-            ) as mock_apply:
-                with patch(_PROMPT_APPLY, side_effect=choices):
-                    result = handle_apply(ctx)
+        with patch(_APPLY_PATCH, return_value=apply_ok) as mock_apply:
+            with patch(_PROMPT_APPLY, side_effect=choices):
+                _apply_per_file(ctx, patches)
 
-        assert result == "continue"
-        # Only the first patch was applied; ABORT stopped before b.py and c.py.
         assert mock_apply.call_count == 1
         print_calls = " ".join(str(c) for c in console.print.call_args_list)
         assert "bort" in print_calls.lower() or "Aborted" in print_calls
 
 
-class TestApplyYesAllSkipsSubsequentPrompts:
-    def test_apply_yes_all_skips_subsequent_prompts(self, tmp_path):
+class TestApplyPerFileYesAllSkipsSubsequentPrompts:
+    def test_yes_all_prompt_called_once_all_applied(self, tmp_path):
         """YES_ALL on first patch: prompt_apply_choice called once, all 3 patches applied."""
         patches = [_make_patch("a.py"), _make_patch("b.py"), _make_patch("c.py")]
         apply_ok = ApplyResult(path="x", status="applied")
         console = MagicMock()
         ctx = _make_ctx(tmp_path, last_diff="dummy", console=console)
 
-        with patch("hierocode.shell_handlers.apply.parse_diff", return_value=patches):
-            with patch(
-                "hierocode.shell_handlers.apply.apply_patch", return_value=apply_ok
-            ) as mock_apply:
-                with patch(_PROMPT_APPLY, return_value=ApplyChoice.YES_ALL) as mock_prompt:
-                    result = handle_apply(ctx)
+        with patch(_APPLY_PATCH, return_value=apply_ok) as mock_apply:
+            with patch(_PROMPT_APPLY, return_value=ApplyChoice.YES_ALL) as mock_prompt:
+                _apply_per_file(ctx, patches)
 
-        assert result == "continue"
-        # Prompt was asked only once (for the first patch)
         assert mock_prompt.call_count == 1
-        # All 3 patches were applied
         assert mock_apply.call_count == 3
 
 
-class TestApplySummaryPrinted:
-    def test_apply_summary_printed(self, tmp_path):
-        """Summary line is always printed at the end showing applied/skipped/errors."""
+class TestApplyPerFileSummaryPrinted:
+    def test_summary_shows_applied_skipped_errors(self, tmp_path):
+        """Summary line shows applied/skipped/errors."""
         patches = [_make_patch("x.py"), _make_patch("y.py")]
         apply_ok = ApplyResult(path="x.py", status="applied")
         apply_err = ApplyResult(path="y.py", status="error", message="oops")
@@ -210,13 +316,9 @@ class TestApplySummaryPrinted:
         choices = iter([ApplyChoice.YES, ApplyChoice.YES])
         apply_results = iter([apply_ok, apply_err])
 
-        with patch("hierocode.shell_handlers.apply.parse_diff", return_value=patches):
-            with patch(
-                "hierocode.shell_handlers.apply.apply_patch",
-                side_effect=apply_results,
-            ):
-                with patch(_PROMPT_APPLY, side_effect=choices):
-                    handle_apply(ctx)
+        with patch(_APPLY_PATCH, side_effect=apply_results):
+            with patch(_PROMPT_APPLY, side_effect=choices):
+                _apply_per_file(ctx, patches)
 
         print_calls = " ".join(str(c) for c in console.print.call_args_list)
         assert "Summary" in print_calls
@@ -224,23 +326,25 @@ class TestApplySummaryPrinted:
         assert "errors=1" in print_calls
 
 
-class TestApplyErrorFromApplyPatch:
-    def test_apply_error_from_apply_patch_printed(self, tmp_path):
-        """When apply_patch returns status='error', the error message is printed."""
-        patches = [_make_patch("bad.py")]
-        apply_err = ApplyResult(path="bad.py", status="error", message="git exploded")
+class TestApplyPerFileReviewRespectSkipAndAbort:
+    def test_via_review_branch_skip_and_abort(self, tmp_path):
+        """Per-file flow reached via REVIEW branch handles skip and abort correctly."""
+        patches = [_make_patch("a.py"), _make_patch("b.py"), _make_patch("c.py")]
+        apply_ok = ApplyResult(path="a.py", status="applied")
         console = MagicMock()
         ctx = _make_ctx(tmp_path, last_diff="dummy", console=console)
 
-        with patch("hierocode.shell_handlers.apply.parse_diff", return_value=patches):
-            with patch(
-                "hierocode.shell_handlers.apply.apply_patch", return_value=apply_err
-            ):
-                with patch(_PROMPT_APPLY, return_value=ApplyChoice.YES):
-                    handle_apply(ctx)
+        batch_result = BatchApplyResult(choice=BatchApplyChoice.REVIEW)
+        # a.py → skip, b.py → abort, c.py never reached
+        per_file_choices = iter([ApplyChoice.SKIP, ApplyChoice.ABORT])
 
-        print_calls = " ".join(str(c) for c in console.print.call_args_list)
-        assert "git exploded" in print_calls
+        with patch(_PARSE_DIFF, return_value=patches):
+            with patch(_APPLY_PATCH, return_value=apply_ok) as mock_apply:
+                with patch(_PROMPT_BATCH, return_value=batch_result):
+                    with patch(_PROMPT_APPLY, side_effect=per_file_choices):
+                        handle_apply(ctx)
+
+        mock_apply.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -258,10 +362,7 @@ class TestRegisterAll:
 
 
 # ---------------------------------------------------------------------------
-# _confirm unit tests
-#
-# _confirm is a legacy wrapper that delegates to prompt_apply_choice.
-# Tests patch prompt_apply_choice directly.
+# _confirm unit tests (legacy wrapper)
 # ---------------------------------------------------------------------------
 
 

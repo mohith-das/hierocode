@@ -9,7 +9,9 @@ from rich.console import Console
 
 from hierocode.shell_handlers._prompts import (
     ApplyChoice,
+    BatchApplyChoice,
     EscalationChoice,
+    prompt_apply_batch,
     prompt_apply_choice,
     prompt_escalation_approval,
 )
@@ -183,3 +185,129 @@ class TestPromptEscalationApprovalDisplay:
         rendered = real_console.export_text()
         assert "unit-99" in rendered
         assert "write the tests" in rendered
+
+
+# ---------------------------------------------------------------------------
+# Helpers for prompt_apply_batch
+# ---------------------------------------------------------------------------
+
+
+def _make_file_patch(path: str = "src/foo.py", added: int = 5, removed: int = 2):
+    """Build a minimal FilePatch-compatible object without importing patcher."""
+    from hierocode.broker.patcher import FilePatch, PatchAction
+
+    return FilePatch(
+        path=path,
+        action=PatchAction.MODIFY,
+        line_count_added=added,
+        line_count_removed=removed,
+        raw_diff="--- a\n+++ b\n@@ -1 +1 @@\n-old\n+new\n",
+    )
+
+
+def _patched_prompt_sequence(*return_values):
+    """Patch PromptSession so successive .prompt() calls return each value in order."""
+    mock_session = MagicMock()
+    mock_session.return_value.prompt.side_effect = list(return_values)
+    return patch(_PROMPT_SESSION_PATH, mock_session)
+
+
+# ---------------------------------------------------------------------------
+# prompt_apply_batch — choice mapping
+# ---------------------------------------------------------------------------
+
+
+class TestPromptApplyBatch:
+    def test_yes_returns_yes_all_no_sticky(self):
+        """'y' then 'n' → YES_ALL with make_sticky=False."""
+        patches = [_make_file_patch()]
+        with _patched_prompt_sequence("y", "n"), patch(_CONSOLE_PATH):
+            result = prompt_apply_batch(patches)
+        assert result.choice == BatchApplyChoice.YES_ALL
+        assert result.make_sticky is False
+
+    def test_yes_with_sticky(self):
+        """'y' then 'y' → YES_ALL with make_sticky=True."""
+        patches = [_make_file_patch()]
+        with _patched_prompt_sequence("y", "y"), patch(_CONSOLE_PATH):
+            result = prompt_apply_batch(patches)
+        assert result.choice == BatchApplyChoice.YES_ALL
+        assert result.make_sticky is True
+
+    def test_review_returns_review(self):
+        """'r' → REVIEW, make_sticky=False (no sticky prompt for review)."""
+        patches = [_make_file_patch()]
+        with _patched_prompt_sequence("r"), patch(_CONSOLE_PATH):
+            result = prompt_apply_batch(patches)
+        assert result.choice == BatchApplyChoice.REVIEW
+        assert result.make_sticky is False
+
+    def test_no_returns_abort(self):
+        """'n' → ABORT."""
+        patches = [_make_file_patch()]
+        with _patched_prompt_sequence("n"), patch(_CONSOLE_PATH):
+            result = prompt_apply_batch(patches)
+        assert result.choice == BatchApplyChoice.ABORT
+
+    def test_empty_returns_abort(self):
+        """Empty input → ABORT (safer default)."""
+        patches = [_make_file_patch()]
+        with _patched_prompt_sequence(""), patch(_CONSOLE_PATH):
+            result = prompt_apply_batch(patches)
+        assert result.choice == BatchApplyChoice.ABORT
+
+    def test_unknown_returns_abort(self):
+        """'x' → ABORT."""
+        patches = [_make_file_patch()]
+        with _patched_prompt_sequence("x"), patch(_CONSOLE_PATH):
+            result = prompt_apply_batch(patches)
+        assert result.choice == BatchApplyChoice.ABORT
+
+    def test_ctrl_c_returns_abort(self):
+        """KeyboardInterrupt → ABORT."""
+        patches = [_make_file_patch()]
+        with _patched_prompt_raises(KeyboardInterrupt), patch(_CONSOLE_PATH):
+            result = prompt_apply_batch(patches)
+        assert result.choice == BatchApplyChoice.ABORT
+        assert result.make_sticky is False
+
+    def test_eof_returns_abort(self):
+        """EOFError → ABORT."""
+        patches = [_make_file_patch()]
+        with _patched_prompt_raises(EOFError), patch(_CONSOLE_PATH):
+            result = prompt_apply_batch(patches)
+        assert result.choice == BatchApplyChoice.ABORT
+
+
+# ---------------------------------------------------------------------------
+# prompt_apply_batch — display content
+# ---------------------------------------------------------------------------
+
+
+class TestPromptApplyBatchDisplay:
+    def test_renders_all_files(self):
+        """Panel must contain each of the 3 file paths."""
+        patches = [
+            _make_file_patch("src/a.py"),
+            _make_file_patch("src/b.py"),
+            _make_file_patch("src/c.py"),
+        ]
+        real_console = _capturing_console()
+        with _patched_prompt_sequence("n"), patch(_CONSOLE_PATH, real_console):
+            prompt_apply_batch(patches)
+
+        rendered = real_console.export_text()
+        assert "src/a.py" in rendered
+        assert "src/b.py" in rendered
+        assert "src/c.py" in rendered
+
+    def test_renders_line_counts(self):
+        """Panel must mention +N -M per file."""
+        patches = [_make_file_patch("x.py", added=10, removed=3)]
+        real_console = _capturing_console()
+        with _patched_prompt_sequence("n"), patch(_CONSOLE_PATH, real_console):
+            prompt_apply_batch(patches)
+
+        rendered = real_console.export_text()
+        assert "10" in rendered
+        assert "3" in rendered
