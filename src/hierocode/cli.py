@@ -8,7 +8,8 @@ from hierocode import __version__
 from hierocode.runtime.resources import get_cpu_count, get_total_ram_gb, get_available_ram_gb
 from hierocode.runtime.recommendations import suggest_workers
 
-app = typer.Typer(help="Hierocode: Local-first hierarchical coding orchestrator.", no_args_is_help=True)
+app = typer.Typer(help="Hierocode: Local-first hierarchical coding orchestrator.",
+                  invoke_without_command=True)
 providers_app = typer.Typer(help="Manage configured providers.", no_args_is_help=True)
 models_app = typer.Typer(help="Query available models.", no_args_is_help=True)
 workers_app = typer.Typer(help="Manage parallel worker configuration.", no_args_is_help=True)
@@ -18,6 +19,32 @@ app.add_typer(providers_app, name="providers")
 app.add_typer(models_app, name="models")
 app.add_typer(workers_app, name="workers")
 app.add_typer(cache_app, name="cache")
+
+
+@app.callback()
+def _main(ctx: typer.Context):
+    """Bare `hierocode` with no subcommand enters the interactive TUI (if config exists)."""
+    if ctx.invoked_subcommand is not None:
+        return
+    try:
+        conf = load_config()
+    except ConfigError as e:
+        log_error(str(e))
+        log_info("Try running 'hierocode init' or 'hierocode init --wizard'.")
+        raise typer.Exit(code=1)
+
+    from hierocode.cli_shell import HandlerRegistry, run_shell
+    from hierocode.shell_handlers import aliases as aliases_mod
+    from hierocode.shell_handlers import apply as apply_mod
+    from hierocode.shell_handlers import broker_cmds
+
+    registry = HandlerRegistry()
+    broker_cmds.register_all(registry)
+    apply_mod.register_all(registry)
+    aliases_mod.register_all(registry)
+
+    log_info(f"hierocode v{__version__} — type /help for commands, /exit to quit.")
+    run_shell(conf, registry, console=console)
 
 @app.command()
 def version():

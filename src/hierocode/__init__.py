@@ -3,4 +3,4 @@ Hierocode
 A local-first hierarchical coding orchestrator for delegating tasks.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"

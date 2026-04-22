@@ -27,6 +27,11 @@ policy:
   max_escalations_per_task: 3
   warn_before_escalation: true
 
+tui:
+  interaction_mode: prompt
+
+tasks: []
+
 parallelization:
   default_strategy: balanced
   max_local_workers: 4

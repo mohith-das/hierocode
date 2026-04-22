@@ -50,6 +50,21 @@ class PolicyConfig(BaseModel):
     warn_before_escalation: bool = True
 
 
+class TUIConfig(BaseModel):
+    """TUI (REPL) behavior when `hierocode` is run with no arguments."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    interaction_mode: Literal["prompt", "immediate"] = "prompt"
+
+
+class TaskAlias(BaseModel):
+    """A named shortcut for a frequently-run task, persisted in ~/.hierocode.yaml."""
+
+    name: str
+    description: str
+
+
 class HierocodeConfig(BaseModel):
     """Top-level hierocode config. Unknown keys from v0.1 configs are tolerated."""
 
@@ -61,3 +76,5 @@ class HierocodeConfig(BaseModel):
     parallelization: ParallelizationConfig = Field(default_factory=ParallelizationConfig)
     routing: RoutingConfig = Field(default_factory=RoutingConfig)
     policy: PolicyConfig = Field(default_factory=PolicyConfig)
+    tui: TUIConfig = Field(default_factory=TUIConfig)
+    tasks: list[TaskAlias] = Field(default_factory=list)

@@ -246,6 +246,14 @@ policy:
   max_escalations_per_task: 3
   warn_before_escalation: true
 
+tui:
+  # "prompt" — plain text asks "Run as task? [y/N/e]".
+  # "immediate" — plain text dispatches directly to /run.
+  interaction_mode: prompt
+
+# Named task aliases. Save frequently-run tasks with `/task save <name> <description>`.
+tasks: []
+
 parallelization:
   default_strategy: balanced
   max_local_workers: 4
