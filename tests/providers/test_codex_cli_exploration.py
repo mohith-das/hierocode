@@ -50,18 +50,19 @@ class TestPassiveMode:
 # ---------------------------------------------------------------------------
 
 class TestActiveMode:
-    def test_active_mode_sets_approval_never_and_readonly_sandbox(self, provider):
-        """exploration='active' → --approval-policy never and --sandbox read-only."""
+    def test_active_mode_sets_readonly_sandbox(self, provider):
+        """exploration='active' → --sandbox read-only only.
+
+        Earlier versions also passed --approval-policy, but codex 0.122+ doesn't
+        accept that flag; exec mode is non-interactive by default anyway.
+        """
         jsonl = '{"type": "agent_message", "content": "done"}\n'
         mock_result = _completed(stdout=jsonl)
         with patch("subprocess.run", return_value=mock_result) as mock_run:
             provider.generate("plan this", "gpt-5-codex", exploration="active")
             cmd = mock_run.call_args[0][0]
 
-        assert "--approval-policy" in cmd
-        ap_idx = cmd.index("--approval-policy")
-        assert cmd[ap_idx + 1] == "never"
-
+        assert "--approval-policy" not in cmd
         assert "--sandbox" in cmd
         sb_idx = cmd.index("--sandbox")
         assert cmd[sb_idx + 1] == "read-only"
@@ -84,6 +85,4 @@ class TestActiveMode:
             cmd = mock_run.call_args[0][0]
 
         assert "--allowedTools" not in cmd
-        # Active flags still present
-        assert "--approval-policy" in cmd
         assert "--sandbox" in cmd

@@ -55,7 +55,10 @@ class DetectionResult:
 
 _PLANNER_MODEL: dict[str, str] = {
     "claude_code_cli": "claude-sonnet-4-6",
-    "codex_cli": "gpt-5-codex",
+    # "default" = let codex pick based on the user's ChatGPT tier. Named models
+    # (gpt-5, gpt-5-codex, o4-mini) are rejected on ChatGPT-authenticated
+    # codex CLI as of 0.122.0.
+    "codex_cli": "default",
     "anthropic": "claude-haiku-4-5",
     # "ollama" is filled dynamically (same as drafter)
 }

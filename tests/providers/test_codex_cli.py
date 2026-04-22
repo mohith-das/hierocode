@@ -68,14 +68,17 @@ class TestCodexCliGenerate:
             with pytest.raises(ProviderConnectionError, match="codex CLI timed out"):
                 _PROVIDER.generate("prompt", model="gpt-5")
 
-    def test_system_prompt_passed(self):
+    def test_system_prompt_prepended_to_prompt(self):
+        """codex (>=0.122) has no --system flag; system text is folded into the prompt."""
         stdout = '{"type":"agent_message","content":"ok"}\n'
         with patch("subprocess.run", return_value=_completed(stdout=stdout)) as mock_run:
             _PROVIDER.generate("prompt", model="gpt-5", system="You are a coding assistant.")
         cmd = mock_run.call_args.args[0]
-        assert "--system" in cmd
-        idx = cmd.index("--system")
-        assert cmd[idx + 1] == "You are a coding assistant."
+        assert "--system" not in cmd
+        # Last positional arg is the combined prompt text.
+        combined = cmd[-1]
+        assert "You are a coding assistant." in combined
+        assert "prompt" in combined
 
 
 class TestCodexCliHealthcheck:
@@ -108,3 +111,53 @@ class TestCodexCliListModels:
 class TestCodexCliMeta:
     def test_is_local_true(self):
         assert _PROVIDER.is_local() is True
+
+
+class TestCodexCliRegressions:
+    """Regressions for bugs found during live testing against codex 0.122.0."""
+
+    def test_generate_always_passes_skip_git_repo_check(self):
+        """Hierocode is often run outside a git repo (/tmp, scratch dirs). Always skip."""
+        stdout = '{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}\n'
+        with patch("subprocess.run", return_value=_completed(stdout=stdout)) as mock_run:
+            _PROVIDER.generate("hi", model="")
+        assert "--skip-git-repo-check" in mock_run.call_args.args[0]
+
+    def test_generate_omits_model_when_default_sentinel(self):
+        """model='default' / '' / None → no --model flag (codex picks tier default)."""
+        stdout = '{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}\n'
+        for sentinel in ("default", "DEFAULT", "", None):
+            with patch("subprocess.run", return_value=_completed(stdout=stdout)) as mock_run:
+                _PROVIDER.generate("hi", model=sentinel)  # type: ignore[arg-type]
+            assert "--model" not in mock_run.call_args.args[0], f"unexpected --model for {sentinel!r}"
+
+    def test_generate_never_passes_system_flag(self):
+        """--system was removed in codex 0.122; regression guard."""
+        stdout = '{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}\n'
+        with patch("subprocess.run", return_value=_completed(stdout=stdout)) as mock_run:
+            _PROVIDER.generate("hi", model="gpt-5", system="you are a helper")
+        assert "--system" not in mock_run.call_args.args[0]
+
+    def test_parse_jsonl_handles_nested_item_completed_shape(self):
+        """codex 0.122+ wraps agent_message inside an item.completed event."""
+        stdout = (
+            '{"type":"thread.started"}\n'
+            '{"type":"turn.started"}\n'
+            '{"type":"item.completed","item":{"type":"agent_message","text":"final answer"}}\n'
+            '{"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":5}}\n'
+        )
+        with patch("subprocess.run", return_value=_completed(stdout=stdout)):
+            result = _PROVIDER.generate("hi", model="")
+        assert result == "final answer"
+
+    def test_generate_records_usage_from_turn_completed(self):
+        stdout = (
+            '{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}\n'
+            '{"type":"turn.completed","usage":{"input_tokens":1234,"output_tokens":56}}\n'
+        )
+        with patch("subprocess.run", return_value=_completed(stdout=stdout)):
+            _PROVIDER.generate("hi", model="")
+        assert _PROVIDER.last_usage is not None
+        assert _PROVIDER.last_usage.input_tokens == 1234
+        assert _PROVIDER.last_usage.output_tokens == 56
+        assert _PROVIDER.last_usage.messages == 1

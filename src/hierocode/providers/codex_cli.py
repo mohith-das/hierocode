@@ -29,32 +29,44 @@ class CodexCliProvider(BaseProvider):
         return list(CODEX_MODELS)
 
     def generate(self, prompt: str, model: str, **options) -> str:
-        """Run `codex exec <prompt>` and return the terminal agent message content."""
-        cmd = ["codex", "exec", prompt]
+        """Run `codex exec <prompt>` and return the terminal agent message content.
 
+        codex (>=0.122.0) has no `--system` flag and exec mode is non-interactive by
+        default, so the system string (if provided) is prepended to the prompt text.
+        We always pass `--skip-git-repo-check` so hierocode works outside a git repo.
+        """
         system = options.get("system")
-        if system:
-            cmd += ["--system", system]
+        effective_prompt = f"{system}\n\n{prompt}" if system else prompt
 
-        if model:
+        cmd = ["codex", "exec", "--skip-git-repo-check", "--json"]
+
+        # Pass --model only when the caller wants to override codex's own default.
+        # ChatGPT-authenticated codex rejects most named models (gpt-5, gpt-5-codex,
+        # o4-mini) — the account's tier determines what's available. Treat "default",
+        # "" and None as "let codex decide".
+        if model and model.lower() != "default":
             cmd += ["--model", model]
 
-        cmd += ["--json"]
-
         if options.get("exploration") == "active":
-            cmd += ["--approval-policy", "never"]
+            # Read-only sandbox lets the model use Read/Grep/Glob without letting
+            # it edit files — hierocode's drafter owns edits.
             cmd += ["--sandbox", "read-only"]
+
+        cmd.append(effective_prompt)
 
         timeout = options.get("timeout", 180)
         cwd = options.get("cwd")
 
         try:
+            # stdin=DEVNULL — codex exec reads extra input from stdin if connected
+            # to a TTY, which hangs the subprocess even when a prompt arg is given.
             result = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
                 timeout=timeout,
                 cwd=cwd,
+                stdin=subprocess.DEVNULL,
             )
         except FileNotFoundError:
             raise ProviderConnectionError(
@@ -109,8 +121,13 @@ class CodexCliProvider(BaseProvider):
 
     @staticmethod
     def _parse_jsonl(stdout: str) -> str:
-        """Parse Codex JSONL output and return the terminal message content."""
-        _terminal_types = {"agent_message", "message"}
+        """Parse Codex JSONL output and return the terminal agent-message text.
+
+        Codex 0.122.0 emits events of shape:
+            {"type": "item.completed", "item": {"type": "agent_message", "text": "..."}}
+        Older/alternate shapes may have `agent_message` or `message` at the top level
+        with `content` / `text` / `message` as the payload — supported as fallbacks."""
+        _flat_terminal_types = {"agent_message", "message"}
         terminal_content: str | None = None
         fallback_parts: list[str] = []
 
@@ -123,13 +140,24 @@ class CodexCliProvider(BaseProvider):
             except json.JSONDecodeError:
                 continue
 
+            # Shape 1: nested item.completed → item.agent_message (codex 0.122+)
+            item = obj.get("item")
+            if isinstance(item, dict) and item.get("type") in _flat_terminal_types:
+                text = item.get("text") or item.get("content") or item.get("message")
+                if text:
+                    terminal_content = str(text)
+                    continue
+
+            # Shape 2: flat agent_message / message at top level
             event_type = obj.get("type", "")
             text = obj.get("content") or obj.get("text") or obj.get("message")
 
-            if event_type in _terminal_types and text:
+            if event_type in _flat_terminal_types and text:
                 terminal_content = str(text)
+                continue
 
-            if text and event_type not in _terminal_types:
+            # Collect incidental text for fallback
+            if text and event_type not in _flat_terminal_types:
                 fallback_parts.append(str(text))
 
         if terminal_content is not None:
@@ -138,5 +166,4 @@ class CodexCliProvider(BaseProvider):
         if fallback_parts:
             return "\n".join(fallback_parts)
 
-        # JSON parsed but no useful field found — or parsing failed entirely.
         return stdout

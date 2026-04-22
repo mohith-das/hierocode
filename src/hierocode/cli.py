@@ -106,7 +106,16 @@ def doctor():
     all_providers_ok = True
     for p_name, p_conf in conf.providers.items():
         prov = get_provider(p_name, p_conf)
-        if prov.healthcheck():
+        try:
+            reachable = prov.healthcheck()
+        except Exception as e:
+            # Providers may raise when misconfigured (e.g. anthropic without
+            # ANTHROPIC_API_KEY set). Don't crash the whole doctor run — report
+            # the failure for this provider and continue.
+            log_warning(f"Provider '{p_name}' ({p_conf.type}) check failed: {e}")
+            all_providers_ok = False
+            continue
+        if reachable:
             log_success(f"Provider '{p_name}' ({p_conf.type}) is reachable.")
         else:
             log_warning(f"Provider '{p_name}' ({p_conf.type}) is unreachable.")

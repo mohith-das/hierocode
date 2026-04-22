@@ -7,10 +7,15 @@ from hierocode.exceptions import ProviderConnectionError, ModelNotFoundError
 class OllamaProvider(BaseProvider):
     """Provides access to Ollama via typical port endpoints."""
 
+    # Local model generation can take well over 60s on CPU-only hardware — give
+    # `/api/generate` a generous budget. `/api/tags` and `/api/show` are fast.
+    _GENERATE_TIMEOUT = 600.0      # 10 min ceiling for a single drafter call
+    _METADATA_TIMEOUT = 10.0       # `/api/show`, `/api/tags`, `/`
+
     def __init__(self, name: str, config, **kwargs):
         super().__init__(name, config)
         self.base_url = self.config.base_url or "http://localhost:11434"
-        self.client = httpx.Client()
+        self.client = httpx.Client(timeout=httpx.Timeout(self._METADATA_TIMEOUT))
 
     def healthcheck(self) -> bool:
         try:
@@ -41,7 +46,11 @@ class OllamaProvider(BaseProvider):
             if options:
                 payload["options"] = options
 
-            r = self.client.post(f"{self.base_url}/api/generate", json=payload)
+            r = self.client.post(
+                f"{self.base_url}/api/generate",
+                json=payload,
+                timeout=self._GENERATE_TIMEOUT,
+            )
             r.raise_for_status()
             data = r.json()
             self.last_usage = UsageInfo(
