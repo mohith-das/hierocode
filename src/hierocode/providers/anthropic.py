@@ -6,6 +6,7 @@ try:
 except ImportError:
     Anthropic = None
 
+from hierocode.broker.usage import UsageInfo
 from hierocode.providers._models import ANTHROPIC_MODELS
 from hierocode.providers.base import BaseProvider
 from hierocode.exceptions import ProviderConnectionError, ModelNotFoundError
@@ -122,8 +123,26 @@ class AnthropicProvider(BaseProvider):
             cache_user_prefix=cache_user_prefix,
         )
 
+        self.last_usage = None
         try:
             response = client.messages.create(**create_kwargs)
+            u = response.usage
+            try:
+                self.last_usage = UsageInfo(
+                    input_tokens=int(getattr(u, "input_tokens", 0) or 0),
+                    output_tokens=int(getattr(u, "output_tokens", 0) or 0),
+                    cache_creation_input_tokens=int(
+                        getattr(u, "cache_creation_input_tokens", 0) or 0
+                    ),
+                    cache_read_input_tokens=int(
+                        getattr(u, "cache_read_input_tokens", 0) or 0
+                    ),
+                    messages=0,
+                    provider_type="anthropic",
+                    model=model,
+                )
+            except (TypeError, ValueError):
+                self.last_usage = UsageInfo(provider_type="anthropic", model=model)
             return response.content[0].text
         except Exception as e:
             err = str(e)

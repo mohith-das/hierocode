@@ -29,8 +29,12 @@ class ParallelizationConfig(BaseModel):
 
 
 class RoleRouting(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     provider: str
     model: str
+    exploration: Literal["passive", "active"] = "passive"
+    allowed_tools: Optional[list[str]] = None
 
 
 class RoutingConfig(BaseModel):

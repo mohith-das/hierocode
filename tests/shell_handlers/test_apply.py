@@ -9,7 +9,11 @@ from unittest.mock import MagicMock, patch
 from hierocode.broker.patcher import ApplyResult, FilePatch, PatchAction, PatchParseError
 from hierocode.cli_shell import HandlerContext, HandlerRegistry, SessionState
 from hierocode.models.schemas import HierocodeConfig
+from hierocode.shell_handlers._prompts import ApplyChoice
 from hierocode.shell_handlers.apply import _confirm, handle_apply, register_all
+
+# Patch target for the new prompt helper
+_PROMPT_APPLY = "hierocode.shell_handlers.apply.prompt_apply_choice"
 
 
 # ---------------------------------------------------------------------------
@@ -102,7 +106,7 @@ class TestApplyEmptyParsedDiff:
 
 class TestApplyWalksThroughEachFile:
     def test_apply_walks_through_each_file(self, tmp_path):
-        """With 2 patches and 'y' for each, apply_patch is called twice and both applied."""
+        """With 2 patches and YES for each, apply_patch is called twice and both applied."""
         patches = [_make_patch("a.py"), _make_patch("b.py")]
         apply_ok = ApplyResult(path="x", status="applied")
         console = MagicMock()
@@ -112,9 +116,7 @@ class TestApplyWalksThroughEachFile:
             with patch(
                 "hierocode.shell_handlers.apply.apply_patch", return_value=apply_ok
             ) as mock_apply:
-                with patch(
-                    "hierocode.shell_handlers.apply._confirm", return_value="y"
-                ):
+                with patch(_PROMPT_APPLY, return_value=ApplyChoice.YES):
                     result = handle_apply(ctx)
 
         assert result == "continue"
@@ -123,36 +125,28 @@ class TestApplyWalksThroughEachFile:
 
 class TestApplySkipPerFile:
     def test_apply_skip_per_file(self, tmp_path):
-        """When _confirm returns 'n', apply_patch is NOT called for that patch."""
+        """When prompt returns SKIP, apply_patch is NOT called for that patch."""
         patches = [_make_patch("skip_me.py")]
         console = MagicMock()
         ctx = _make_ctx(tmp_path, last_diff="dummy", console=console)
 
         with patch("hierocode.shell_handlers.apply.parse_diff", return_value=patches):
-            with patch(
-                "hierocode.shell_handlers.apply.apply_patch"
-            ) as mock_apply:
-                with patch(
-                    "hierocode.shell_handlers.apply._confirm", return_value="n"
-                ):
+            with patch("hierocode.shell_handlers.apply.apply_patch") as mock_apply:
+                with patch(_PROMPT_APPLY, return_value=ApplyChoice.SKIP):
                     result = handle_apply(ctx)
 
         assert result == "continue"
         mock_apply.assert_not_called()
 
     def test_apply_skip_via_s_response(self, tmp_path):
-        """When _confirm returns 's', apply_patch is NOT called."""
+        """SKIP choice leaves apply_patch uncalled."""
         patches = [_make_patch("also_skip.py")]
         console = MagicMock()
         ctx = _make_ctx(tmp_path, last_diff="dummy", console=console)
 
         with patch("hierocode.shell_handlers.apply.parse_diff", return_value=patches):
-            with patch(
-                "hierocode.shell_handlers.apply.apply_patch"
-            ) as mock_apply:
-                with patch(
-                    "hierocode.shell_handlers.apply._confirm", return_value="s"
-                ):
+            with patch("hierocode.shell_handlers.apply.apply_patch") as mock_apply:
+                with patch(_PROMPT_APPLY, return_value=ApplyChoice.SKIP):
                     handle_apply(ctx)
 
         mock_apply.assert_not_called()
@@ -160,30 +154,48 @@ class TestApplySkipPerFile:
 
 class TestApplyQuitAbortsRemaining:
     def test_apply_quit_aborts_remaining(self, tmp_path):
-        """'q' on the second patch leaves the third patch untouched."""
+        """ABORT on the second patch leaves the third patch untouched."""
         patches = [_make_patch("a.py"), _make_patch("b.py"), _make_patch("c.py")]
         apply_ok = ApplyResult(path="a.py", status="applied")
         console = MagicMock()
         ctx = _make_ctx(tmp_path, last_diff="dummy", console=console)
 
-        confirm_responses = ["y", "q", "y"]
-        confirm_iter = iter(confirm_responses)
+        choices = iter([ApplyChoice.YES, ApplyChoice.ABORT, ApplyChoice.YES])
 
         with patch("hierocode.shell_handlers.apply.parse_diff", return_value=patches):
             with patch(
                 "hierocode.shell_handlers.apply.apply_patch", return_value=apply_ok
             ) as mock_apply:
-                with patch(
-                    "hierocode.shell_handlers.apply._confirm",
-                    side_effect=confirm_iter,
-                ):
+                with patch(_PROMPT_APPLY, side_effect=choices):
                     result = handle_apply(ctx)
 
         assert result == "continue"
-        # Only the first patch was applied; 'q' stopped before b.py and c.py.
+        # Only the first patch was applied; ABORT stopped before b.py and c.py.
         assert mock_apply.call_count == 1
         print_calls = " ".join(str(c) for c in console.print.call_args_list)
         assert "bort" in print_calls.lower() or "Aborted" in print_calls
+
+
+class TestApplyYesAllSkipsSubsequentPrompts:
+    def test_apply_yes_all_skips_subsequent_prompts(self, tmp_path):
+        """YES_ALL on first patch: prompt_apply_choice called once, all 3 patches applied."""
+        patches = [_make_patch("a.py"), _make_patch("b.py"), _make_patch("c.py")]
+        apply_ok = ApplyResult(path="x", status="applied")
+        console = MagicMock()
+        ctx = _make_ctx(tmp_path, last_diff="dummy", console=console)
+
+        with patch("hierocode.shell_handlers.apply.parse_diff", return_value=patches):
+            with patch(
+                "hierocode.shell_handlers.apply.apply_patch", return_value=apply_ok
+            ) as mock_apply:
+                with patch(_PROMPT_APPLY, return_value=ApplyChoice.YES_ALL) as mock_prompt:
+                    result = handle_apply(ctx)
+
+        assert result == "continue"
+        # Prompt was asked only once (for the first patch)
+        assert mock_prompt.call_count == 1
+        # All 3 patches were applied
+        assert mock_apply.call_count == 3
 
 
 class TestApplySummaryPrinted:
@@ -195,20 +207,15 @@ class TestApplySummaryPrinted:
         console = MagicMock()
         ctx = _make_ctx(tmp_path, last_diff="dummy", console=console)
 
-        responses = ["y", "y"]
-        resp_iter = iter(responses)
-        apply_results = [apply_ok, apply_err]
-        apply_iter = iter(apply_results)
+        choices = iter([ApplyChoice.YES, ApplyChoice.YES])
+        apply_results = iter([apply_ok, apply_err])
 
         with patch("hierocode.shell_handlers.apply.parse_diff", return_value=patches):
             with patch(
                 "hierocode.shell_handlers.apply.apply_patch",
-                side_effect=apply_iter,
+                side_effect=apply_results,
             ):
-                with patch(
-                    "hierocode.shell_handlers.apply._confirm",
-                    side_effect=resp_iter,
-                ):
+                with patch(_PROMPT_APPLY, side_effect=choices):
                     handle_apply(ctx)
 
         print_calls = " ".join(str(c) for c in console.print.call_args_list)
@@ -229,9 +236,7 @@ class TestApplyErrorFromApplyPatch:
             with patch(
                 "hierocode.shell_handlers.apply.apply_patch", return_value=apply_err
             ):
-                with patch(
-                    "hierocode.shell_handlers.apply._confirm", return_value="y"
-                ):
+                with patch(_PROMPT_APPLY, return_value=ApplyChoice.YES):
                     handle_apply(ctx)
 
         print_calls = " ".join(str(c) for c in console.print.call_args_list)
@@ -253,40 +258,36 @@ class TestRegisterAll:
 
 
 # ---------------------------------------------------------------------------
-# _confirm unit tests (using patched input())
+# _confirm unit tests
+#
+# _confirm is a legacy wrapper that delegates to prompt_apply_choice.
+# Tests patch prompt_apply_choice directly.
 # ---------------------------------------------------------------------------
 
 
 class TestConfirmFunction:
-    def _fake_patch(self, path: str = "test.py") -> FilePatch:
+    _PROMPT_PATH = "hierocode.shell_handlers.apply.prompt_apply_choice"
+
+    def _fake_patch_obj(self, path: str = "test.py") -> FilePatch:
         return _make_patch(path)
 
     def test_confirm_y_returns_y(self):
-        patch_obj = self._fake_patch()
-        with patch("builtins.input", return_value="y"):
-            assert _confirm(MagicMock(), patch_obj) == "y"
+        p = self._fake_patch_obj()
+        with patch(self._PROMPT_PATH, return_value=ApplyChoice.YES):
+            assert _confirm(MagicMock(), p) == "y"
 
-    def test_confirm_blank_returns_n(self):
-        patch_obj = self._fake_patch()
-        with patch("builtins.input", return_value=""):
-            assert _confirm(MagicMock(), patch_obj) == "n"
+    def test_confirm_yes_all_returns_y(self):
+        """YES_ALL maps to 'y' in the legacy adapter."""
+        p = self._fake_patch_obj()
+        with patch(self._PROMPT_PATH, return_value=ApplyChoice.YES_ALL):
+            assert _confirm(MagicMock(), p) == "y"
 
-    def test_confirm_s_returns_s(self):
-        patch_obj = self._fake_patch()
-        with patch("builtins.input", return_value="s"):
-            assert _confirm(MagicMock(), patch_obj) == "s"
+    def test_confirm_skip_returns_n(self):
+        p = self._fake_patch_obj()
+        with patch(self._PROMPT_PATH, return_value=ApplyChoice.SKIP):
+            assert _confirm(MagicMock(), p) == "n"
 
-    def test_confirm_q_returns_q(self):
-        patch_obj = self._fake_patch()
-        with patch("builtins.input", return_value="q"):
-            assert _confirm(MagicMock(), patch_obj) == "q"
-
-    def test_confirm_eof_returns_n(self):
-        patch_obj = self._fake_patch()
-        with patch("builtins.input", side_effect=EOFError):
-            assert _confirm(MagicMock(), patch_obj) == "n"
-
-    def test_confirm_keyboard_interrupt_returns_n(self):
-        patch_obj = self._fake_patch()
-        with patch("builtins.input", side_effect=KeyboardInterrupt):
-            assert _confirm(MagicMock(), patch_obj) == "n"
+    def test_confirm_abort_returns_q(self):
+        p = self._fake_patch_obj()
+        with patch(self._PROMPT_PATH, return_value=ApplyChoice.ABORT):
+            assert _confirm(MagicMock(), p) == "q"

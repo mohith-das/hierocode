@@ -1,6 +1,6 @@
 """QA module — asks the planner to review a drafter's diff and return a QAVerdict."""
 
-from typing import Optional
+from typing import Literal, Optional
 
 from hierocode.broker.plan_schema import PlanParseError, QAVerdict, TaskUnit
 from hierocode.broker.plan_schema import parse_qa_verdict_from_llm_output
@@ -24,6 +24,8 @@ def review_draft(
     test_output: Optional[str] = None,
     original_task: str = "",
     max_tokens: int = 2000,
+    exploration: Literal["passive", "active"] = "passive",
+    allowed_tools: Optional[list[str]] = None,
 ) -> QAVerdict:
     """Send a drafter's diff to the planner for QA review and return a QAVerdict."""
     qa_prompt = build_qa_prompt(unit, diff, test_output, original_task)  # type: ignore[misc]
@@ -34,6 +36,8 @@ def review_draft(
         json_mode=True,
         max_tokens=max_tokens,
         system=_QA_SYSTEM,
+        exploration=exploration,
+        allowed_tools=allowed_tools,
     )
 
     try:

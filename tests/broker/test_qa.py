@@ -203,3 +203,22 @@ class TestReviewDraft:
         # Exception must be chained (raise ... from exc)
         assert exc_info.value.__cause__ is not None
         assert isinstance(exc_info.value.__cause__, PlanParseError)
+
+    @patch("hierocode.broker.qa.build_qa_prompt", return_value="qa-prompt-text")
+    def test_review_draft_forwards_exploration_kwargs(self, mock_build):
+        """review_draft must forward exploration and allowed_tools to provider.generate."""
+        from hierocode.broker.qa import review_draft
+
+        provider = _provider(_accept_json())
+        review_draft(
+            provider,
+            "claude-sonnet-4-6",
+            _unit(),
+            "diff text",
+            exploration="active",
+            allowed_tools=["Read"],
+        )
+
+        kwargs = provider.generate.call_args.kwargs
+        assert kwargs.get("exploration") == "active"
+        assert kwargs.get("allowed_tools") == ["Read"]

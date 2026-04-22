@@ -2,9 +2,12 @@ import json
 import subprocess
 from typing import List
 
+from hierocode.broker.usage import UsageInfo
 from hierocode.exceptions import ProviderConnectionError
 from hierocode.providers._models import ANTHROPIC_MODELS
 from hierocode.providers.base import BaseProvider
+
+_DEFAULT_ACTIVE_TOOLS = ["Read", "Grep", "Glob"]
 
 
 class ClaudeCodeCliProvider(BaseProvider):
@@ -41,6 +44,11 @@ class ClaudeCodeCliProvider(BaseProvider):
         if model:
             cmd += ["--model", model]
 
+        if options.get("exploration") == "active":
+            tools = options.get("allowed_tools") or _DEFAULT_ACTIVE_TOOLS
+            cmd += ["--allowedTools", ",".join(tools)]
+            cmd += ["--disallowedTools", "Write,Edit,Bash"]
+
         try:
             result = subprocess.run(
                 cmd,
@@ -60,8 +68,19 @@ class ClaudeCodeCliProvider(BaseProvider):
             raise ProviderConnectionError(f"claude CLI failed: {result.stderr[:500]}")
 
         raw = result.stdout
+        self.last_usage = None
         try:
             parsed = json.loads(raw)
+            usage_block = parsed.get("usage", {}) or {}
+            self.last_usage = UsageInfo(
+                input_tokens=usage_block.get("input_tokens", 0) or 0,
+                output_tokens=usage_block.get("output_tokens", 0) or 0,
+                cache_creation_input_tokens=usage_block.get("cache_creation_input_tokens", 0) or 0,
+                cache_read_input_tokens=usage_block.get("cache_read_input_tokens", 0) or 0,
+                messages=1,
+                provider_type="claude_code_cli",
+                model=model or "",
+            )
             if "result" in parsed:
                 return parsed["result"]
             if "content" in parsed:

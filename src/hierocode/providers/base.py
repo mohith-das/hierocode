@@ -1,13 +1,15 @@
 from abc import ABC, abstractmethod
-from typing import List
+from typing import List, Optional
 from hierocode.models.schemas import ProviderConfig
+from hierocode.broker.usage import UsageInfo
 
 class BaseProvider(ABC):
     """Abstract base provider for all LLM backends."""
-    
+
     def __init__(self, name: str, config: ProviderConfig):
         self.name = name
         self.config = config
+        self.last_usage: Optional[UsageInfo] = None
 
     @abstractmethod
     def healthcheck(self) -> bool:

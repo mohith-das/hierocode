@@ -1,5 +1,6 @@
 import httpx
 from typing import List
+from hierocode.broker.usage import UsageInfo
 from hierocode.providers.base import BaseProvider
 from hierocode.exceptions import ProviderConnectionError, ModelNotFoundError
 from hierocode.auth.helpers import resolve_auth_token
@@ -44,16 +45,25 @@ class OpenAICompatibleProvider(BaseProvider):
             raise ProviderConnectionError(f"Provider {self.name} returned an error status: {e.response.status_code}")
 
     def generate(self, prompt: str, model: str, **options) -> str:
+        self.last_usage = None
         try:
             payload = {
                 "model": model,
                 "messages": [{"role": "user", "content": prompt}],
                 **options
             }
-                
+
             r = self.client.post(f"{self.base_url}/chat/completions", json=payload)
             r.raise_for_status()
             data = r.json()
+            usage = data.get("usage", {}) or {}
+            self.last_usage = UsageInfo(
+                input_tokens=int(usage.get("prompt_tokens", 0) or 0),
+                output_tokens=int(usage.get("completion_tokens", 0) or 0),
+                messages=0,
+                provider_type="openai_compatible",
+                model=model,
+            )
             choices = data.get("choices", [])
             if choices:
                 return choices[0].get("message", {}).get("content", "")

@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 
 from rich.console import Console
 
+from hierocode.broker.usage import UsageAccumulator
 from hierocode.config_writer import ConfigWriteError
 
 # ---------------------------------------------------------------------------
@@ -29,6 +30,7 @@ class _SessionState:
     last_plan: Optional[object] = None
     last_diff: Optional[str] = None
     task_history: list = field(default_factory=list)
+    usage: UsageAccumulator = field(default_factory=UsageAccumulator)
 
 
 @dataclass
@@ -667,3 +669,71 @@ class TestRegisterAll:
         register_all(registry)
 
         assert registry.register.call_count == 12
+
+
+# ---------------------------------------------------------------------------
+# handle_run — escalation_confirm wiring (W27)
+# ---------------------------------------------------------------------------
+
+class TestHandleRunEscalationConfirm:
+    """Verify that handle_run passes escalation_confirm based on policy.warn_before_escalation."""
+
+    def _make_run_dependencies(self):
+        """Return a dict of patches for the full run_plan pipeline."""
+        fake_plan = MagicMock()
+        fake_plan.units = []
+        fake_result = MagicMock()
+        fake_result.total_revisions = 0
+        fake_result.total_escalations = 0
+        fake_result.units = []
+        return fake_plan, fake_result
+
+    def test_handle_run_passes_escalation_confirm_when_policy_warn(self):
+        """With warn_before_escalation=True, run_plan receives a non-None escalation_confirm."""
+        session = _SessionState(repo_root=Path("."))
+        cfg = _minimal_config()
+        cfg.policy.warn_before_escalation = True
+        ctx = make_ctx(["add tests"], config=cfg, session=session)
+
+        fake_plan, fake_result = self._make_run_dependencies()
+
+        with (
+            patch(f"{BASE}.get_route", return_value=("local", "m1")),
+            patch(f"{BASE}.get_provider", return_value=MagicMock()),
+            patch(f"{BASE}.build_capacity_profile", return_value=MagicMock()),
+            patch(f"{BASE}.build_skeleton", return_value="sk"),
+            patch(f"{BASE}.cache_key", return_value="k"),
+            patch(f"{BASE}.read_cached_plan", return_value=fake_plan),
+            patch(f"{BASE}.write_cached_plan"),
+            patch(f"{BASE}.run_plan", return_value=fake_result) as mock_run,
+        ):
+            from hierocode.shell_handlers.broker_cmds import handle_run
+            handle_run(ctx)
+
+        _, kwargs = mock_run.call_args
+        assert kwargs.get("escalation_confirm") is not None
+
+    def test_handle_run_omits_escalation_confirm_when_policy_silent(self):
+        """With warn_before_escalation=False, run_plan receives escalation_confirm=None."""
+        session = _SessionState(repo_root=Path("."))
+        cfg = _minimal_config()
+        cfg.policy.warn_before_escalation = False
+        ctx = make_ctx(["add tests"], config=cfg, session=session)
+
+        fake_plan, fake_result = self._make_run_dependencies()
+
+        with (
+            patch(f"{BASE}.get_route", return_value=("local", "m1")),
+            patch(f"{BASE}.get_provider", return_value=MagicMock()),
+            patch(f"{BASE}.build_capacity_profile", return_value=MagicMock()),
+            patch(f"{BASE}.build_skeleton", return_value="sk"),
+            patch(f"{BASE}.cache_key", return_value="k"),
+            patch(f"{BASE}.read_cached_plan", return_value=fake_plan),
+            patch(f"{BASE}.write_cached_plan"),
+            patch(f"{BASE}.run_plan", return_value=fake_result) as mock_run,
+        ):
+            from hierocode.shell_handlers.broker_cmds import handle_run
+            handle_run(ctx)
+
+        _, kwargs = mock_run.call_args
+        assert kwargs.get("escalation_confirm") is None

@@ -37,11 +37,13 @@ def _main(ctx: typer.Context):
     from hierocode.shell_handlers import aliases as aliases_mod
     from hierocode.shell_handlers import apply as apply_mod
     from hierocode.shell_handlers import broker_cmds
+    from hierocode.shell_handlers import usage_cmd
 
     registry = HandlerRegistry()
     broker_cmds.register_all(registry)
     apply_mod.register_all(registry)
     aliases_mod.register_all(registry)
+    usage_cmd.register_all(registry)
 
     log_info(f"hierocode v{__version__} — type /help for commands, /exit to quit.")
     run_shell(conf, registry, console=console)

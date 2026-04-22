@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 from hierocode.broker.dispatcher import DispatchResult, _strip_code_fences, run_plan
 from hierocode.broker.plan_schema import CapacityProfile, Plan, QAVerdict, TaskUnit
+from hierocode.broker.progress import ProgressReporter
 
 
 # ---------------------------------------------------------------------------
@@ -386,3 +387,154 @@ def test_no_target_files_returns_raw_draft(mock_pack, mock_prompt, mock_review):
     diff = result.units[0].diff
     assert diff == "plain output here"
     assert "---" not in diff or diff.startswith("plain")
+
+
+# ---------------------------------------------------------------------------
+# escalation_confirm callback tests (W27)
+# ---------------------------------------------------------------------------
+
+@patch("hierocode.broker.dispatcher._escalate")
+@patch(_REVIEW_PATH)
+@patch(_BUILD_PROMPT_PATH, return_value="prompt")
+@patch(_PACK_PATH)
+@patch(_READ_FILE_PATH, return_value="")
+@patch(_UNIFIED_DIFF_PATH, return_value="--- diff ---")
+def test_escalation_confirm_approves_proceeds(
+    mock_diff, mock_read, mock_pack, mock_prompt, mock_review, mock_escalate
+):
+    """When escalation_confirm returns True, _escalate is called and unit is 'escalated'."""
+    mock_pack.return_value = _make_packed()
+    mock_review.return_value = _escalate_verdict()
+    mock_escalate.return_value = "--- escalated diff ---"
+
+    planner, drafter = _mock_providers()
+    confirm = MagicMock(return_value=True)
+
+    p = plan_of([unit("u1")])
+    result = run_plan(
+        p,
+        minimal_profile(),
+        planner,
+        "planner-m",
+        drafter,
+        "drafter-m",
+        "/repo",
+        escalation_confirm=confirm,
+    )
+
+    confirm.assert_called_once()
+    assert len(result.units) == 1
+    ur = result.units[0]
+    assert ur.status == "escalated"
+    assert ur.escalated is True
+    mock_escalate.assert_called_once()
+
+
+@patch("hierocode.broker.dispatcher._escalate")
+@patch(_REVIEW_PATH)
+@patch(_BUILD_PROMPT_PATH, return_value="prompt")
+@patch(_PACK_PATH)
+@patch(_READ_FILE_PATH, return_value="")
+@patch(_UNIFIED_DIFF_PATH, return_value="--- diff ---")
+def test_escalation_confirm_declines_marks_failed(
+    mock_diff, mock_read, mock_pack, mock_prompt, mock_review, mock_escalate
+):
+    """When escalation_confirm returns False, _escalate is NOT called; unit fails with 'declined'."""
+    mock_pack.return_value = _make_packed()
+    mock_review.return_value = _escalate_verdict()
+
+    planner, drafter = _mock_providers()
+    confirm = MagicMock(return_value=False)
+
+    p = plan_of([unit("u1")])
+    result = run_plan(
+        p,
+        minimal_profile(),
+        planner,
+        "planner-m",
+        drafter,
+        "drafter-m",
+        "/repo",
+        escalation_confirm=confirm,
+    )
+
+    confirm.assert_called_once()
+    mock_escalate.assert_not_called()
+    assert len(result.units) == 1
+    ur = result.units[0]
+    assert ur.status == "failed"
+    assert ur.reason is not None
+    assert "declined" in ur.reason
+
+
+# ---------------------------------------------------------------------------
+# test_dispatcher_calls_reporter_at_phase_transitions
+# ---------------------------------------------------------------------------
+
+@patch(_REVIEW_PATH)
+@patch(_BUILD_PROMPT_PATH, return_value="prompt")
+@patch(_PACK_PATH)
+@patch(_READ_FILE_PATH, return_value="original content")
+@patch(_UNIFIED_DIFF_PATH, return_value="--- diff ---")
+def test_dispatcher_calls_reporter_at_phase_transitions(
+    mock_diff, mock_read, mock_pack, mock_prompt, mock_review
+):
+    """progress_reporter is called with seed, phase transitions, and finished."""
+    mock_pack.return_value = _make_packed()
+    mock_review.return_value = _accept_verdict()
+
+    planner, drafter = _mock_providers()
+    p = plan_of([unit("u1")])
+
+    reporter = MagicMock(spec=ProgressReporter)
+
+    result = run_plan(
+        p,
+        minimal_profile(),
+        planner,
+        "planner-m",
+        drafter,
+        "drafter-m",
+        "/repo",
+        progress_reporter=reporter,
+    )
+
+    assert isinstance(result, DispatchResult)
+    reporter.seed.assert_called_once()
+    assert reporter.phase.called
+    reporter.finished.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# test_run_plan_forwards_reviewer_exploration_to_review_draft (W28)
+# ---------------------------------------------------------------------------
+
+@patch(_REVIEW_PATH)
+@patch(_BUILD_PROMPT_PATH, return_value="prompt")
+@patch(_PACK_PATH)
+@patch(_READ_FILE_PATH, return_value="")
+@patch(_UNIFIED_DIFF_PATH, return_value="--- diff ---")
+def test_run_plan_forwards_reviewer_exploration_to_review_draft(
+    mock_diff, mock_read, mock_pack, mock_prompt, mock_review
+):
+    """reviewer_exploration and reviewer_allowed_tools are forwarded to review_draft."""
+    mock_pack.return_value = _make_packed()
+    mock_review.return_value = _accept_verdict()
+
+    planner, drafter = _mock_providers()
+    p = plan_of([unit("u1")])
+    run_plan(
+        p,
+        minimal_profile(),
+        planner,
+        "planner-m",
+        drafter,
+        "drafter-m",
+        "/repo",
+        reviewer_exploration="active",
+        reviewer_allowed_tools=["Read"],
+    )
+
+    call_kwargs = mock_review.call_args.kwargs
+    assert call_kwargs.get("exploration") == "active"
+    assert call_kwargs.get("allowed_tools") == ["Read"]

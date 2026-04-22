@@ -18,6 +18,7 @@ from prompt_toolkit.history import FileHistory
 from rich.console import Console
 
 from hierocode.broker.plan_schema import Plan
+from hierocode.broker.usage import UsageAccumulator
 from hierocode.models.schemas import HierocodeConfig
 
 # ---------------------------------------------------------------------------
@@ -37,6 +38,7 @@ class SessionState:
     last_plan: Optional[Plan] = None
     last_diff: Optional[str] = None  # raw unified diff string
     task_history: list[str] = field(default_factory=list)
+    usage: UsageAccumulator = field(default_factory=UsageAccumulator)
 
 
 @dataclass

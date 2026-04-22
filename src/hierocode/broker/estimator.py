@@ -9,14 +9,15 @@ from hierocode.models.schemas import ProviderConfig
 
 PlannerKind = Literal["anthropic_api", "claude_code_cli", "codex_cli", "other"]
 
-# Pricing table — $/M tokens (input, output).
-ANTHROPIC_PRICING: dict[str, tuple[float, float]] = {
-    "claude-haiku-4-5": (0.25, 1.25),
-    "claude-sonnet-4-6": (3.0, 15.0),
-    "claude-opus-4-7": (15.0, 75.0),
-}
-
 _HAIKU_MODEL = "claude-haiku-4-5"
+
+
+def __getattr__(name: str):
+    """Lazy re-export of ANTHROPIC_PRICING sourced from the pricing config loader."""
+    if name == "ANTHROPIC_PRICING":
+        from hierocode.broker.pricing import get_pricing
+        return get_pricing().anthropic_models
+    raise AttributeError(f"module 'hierocode.broker.estimator' has no attribute {name!r}")
 
 
 @dataclass
@@ -100,10 +101,14 @@ def estimate_task_cost(
     approximate_message_count: Optional[int] = None
 
     if planner_kind == "anthropic_api":
-        if planner_model in ANTHROPIC_PRICING:
-            input_price, output_price = ANTHROPIC_PRICING[planner_model]
+        from hierocode.broker.pricing import get_pricing
+        anthropic_models = get_pricing().anthropic_models
+        if planner_model in anthropic_models:
+            input_price, output_price = anthropic_models[planner_model]
         else:
-            input_price, output_price = ANTHROPIC_PRICING[_HAIKU_MODEL]
+            input_price, output_price = anthropic_models.get(
+                _HAIKU_MODEL, (0.25, 1.25)
+            )
             notes.append(
                 f"Model '{planner_model}' not found in pricing table; "
                 f"falling back to {_HAIKU_MODEL} pricing."

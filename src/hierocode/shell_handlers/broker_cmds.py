@@ -5,10 +5,14 @@ from __future__ import annotations
 import os
 import subprocess
 from pathlib import Path
+from typing import Optional
+
+from rich.live import Live
 
 # cli_shell may not exist on disk yet (W21 is writing it in parallel).
 # Tests mock everything so collection still works once both modules are present.
 from hierocode.cli_shell import HandlerContext, HandlerResult  # noqa: E402
+from hierocode.broker.usage import UsageInfo
 
 from hierocode.broker.budget import pack_context
 from hierocode.broker.capacity import build_capacity_profile
@@ -17,6 +21,7 @@ from hierocode.broker.estimator import estimate_task_cost
 from hierocode.broker.plan_cache import cache_key, clear_cache, read_cached_plan, write_cached_plan
 from hierocode.broker.plan_schema import TaskUnit
 from hierocode.broker.planner import generate_plan
+from hierocode.broker.progress import ProgressState, UnitPhase, _build_panel
 from hierocode.broker.prompts import build_drafter_prompt
 from hierocode.broker.router import get_route
 from hierocode.broker.skeleton import build_skeleton
@@ -41,6 +46,72 @@ def _strip_code_fences(text: str) -> str:
     if lines and lines[-1].startswith("```"):
         lines = lines[:-1]
     return "\n".join(lines)
+
+
+def _extract_quota_limit(config) -> Optional[int]:
+    """Return the messages-per-window limit for subscription-mode planners, else None.
+
+    v0.3.1 hardcoded defaults; v0.3.2 pulls from pricing.yaml.
+    """
+    planner_role = getattr(config.routing, "planner", None)
+    if planner_role is None:
+        return None
+    provider_name = planner_role.provider
+    provider_cfg = config.providers.get(provider_name)
+    if provider_cfg is None:
+        return None
+    if provider_cfg.type == "claude_code_cli":
+        return 40
+    if provider_cfg.type == "codex_cli":
+        return 50
+    return None
+
+
+class _LivePanelReporter:
+    """ProgressReporter implementation that pushes a Rich panel into a Live block."""
+
+    def __init__(self, live: Live, state: ProgressState, usage, quota: Optional[int]) -> None:
+        self.live = live
+        self.state = state
+        self.usage = usage
+        self.quota = quota
+
+    def _refresh(self) -> None:
+        self.live.update(_build_panel(self.state, self.usage, self.quota))
+
+    def seed(self, task: str, units: list[tuple[str, str]]) -> None:
+        """Initialise state from the initial unit list."""
+        self.state.task = task
+        for uid, goal in units:
+            self.state.add_unit(uid, goal)
+        self._refresh()
+
+    def enqueue(self, unit_id: str, goal: str) -> None:
+        """Add a sub-unit that was created by a split verdict."""
+        self.state.add_unit(unit_id, goal)
+        self._refresh()
+
+    def phase(self, unit_id: str, phase: UnitPhase) -> None:
+        """Transition a unit to a new phase and redraw."""
+        self.state.set_phase(unit_id, phase)
+        self._refresh()
+
+    def revision(self, unit_id: str) -> None:
+        """Bump the revision counter and redraw."""
+        self.state.bump_revision(unit_id)
+        self._refresh()
+
+    def finished(self) -> None:
+        """No-op — the Live context manager handles teardown."""
+
+
+def _exploration_for_role(config, role: str) -> tuple[str, Optional[list[str]]]:
+    """Return (exploration, allowed_tools) for a role, defaulting to passive."""
+    routing = config.routing
+    role_cfg = getattr(routing, role, None)
+    if role_cfg is None:
+        return ("passive", None)
+    return (role_cfg.exploration, role_cfg.allowed_tools)
 
 
 def _resolve_providers(ctx: HandlerContext):
@@ -69,27 +140,63 @@ def handle_run(ctx: HandlerContext) -> HandlerResult:
     skeleton = build_skeleton(ctx.session.repo_root)
     key = cache_key(task, skeleton, planner_m, drafter_m)
 
+    p_exploration, p_tools = _exploration_for_role(ctx.config, "planner")
+    r_exploration, r_tools = _exploration_for_role(ctx.config, "reviewer")
+
     planned = read_cached_plan(key)
     if planned is not None:
         ctx.console.print(f"Plan cache [green]HIT[/green] (key={key[:16]}...)")
     else:
         ctx.console.print(f"Plan cache MISS — planning with {planner_m}...")
-        planned = generate_plan(task, skeleton, profile, planner_prov, planner_m)
+        planned = generate_plan(
+            task, skeleton, profile, planner_prov, planner_m,
+            exploration=p_exploration, allowed_tools=p_tools,
+        )
+        if isinstance(planner_prov.last_usage, UsageInfo):
+            ctx.session.usage.record("planner", planner_prov.last_usage)
         write_cached_plan(key, planned)
 
     ctx.console.print(f"Plan has {len(planned.units)} units. Dispatching...")
 
-    result = run_plan(
-        planned,
-        profile,
-        planner_prov,
-        planner_m,
-        drafter_prov,
-        drafter_m,
-        ctx.session.repo_root,
-        max_revisions_per_unit=ctx.config.policy.max_revisions_per_unit,
-        max_escalations_per_task=ctx.config.policy.max_escalations_per_task,
-    )
+    progress_state = ProgressState()
+    quota = _extract_quota_limit(ctx.config)
+    initial_panel = _build_panel(progress_state, ctx.session.usage, quota)
+
+    escalation_cb = None
+    if getattr(ctx.config.policy, "warn_before_escalation", False):
+        from hierocode.shell_handlers._prompts import (
+            EscalationChoice,
+            prompt_escalation_approval,
+        )
+
+        def _ask_escalation(unit, planner_model, revisions_done=0):
+            choice = prompt_escalation_approval(
+                unit.id, unit.goal, revisions_done, planner_model,
+            )
+            return choice == EscalationChoice.APPROVE
+
+        escalation_cb = _ask_escalation
+
+    with Live(initial_panel, console=ctx.console, refresh_per_second=4, transient=False) as live:
+        reporter = _LivePanelReporter(live, progress_state, ctx.session.usage, quota)
+        result = run_plan(
+            planned,
+            profile,
+            planner_prov,
+            planner_m,
+            drafter_prov,
+            drafter_m,
+            ctx.session.repo_root,
+            max_revisions_per_unit=ctx.config.policy.max_revisions_per_unit,
+            max_escalations_per_task=ctx.config.policy.max_escalations_per_task,
+            usage_accumulator=ctx.session.usage,
+            progress_reporter=reporter,
+            reviewer_exploration=r_exploration,
+            reviewer_allowed_tools=r_tools,
+            escalation_confirm=escalation_cb,
+        )
+        # Final panel refresh to show all units in terminal state
+        live.update(_build_panel(progress_state, ctx.session.usage, quota))
 
     ctx.console.print(
         f"\n[bold]Task complete.[/bold] "
@@ -151,12 +258,19 @@ def handle_plan(ctx: HandlerContext) -> HandlerResult:
     skeleton = build_skeleton(ctx.session.repo_root)
     key = cache_key(task, skeleton, planner_m, drafter_m)
 
+    p_exploration, p_tools = _exploration_for_role(ctx.config, "planner")
+
     planned = read_cached_plan(key)
     if planned is not None:
         ctx.console.print(f"Plan cache [green]HIT[/green] (key={key[:16]}...)")
     else:
         ctx.console.print(f"Planning with {planner_m}...")
-        planned = generate_plan(task, skeleton, profile, planner_prov, planner_m)
+        planned = generate_plan(
+            task, skeleton, profile, planner_prov, planner_m,
+            exploration=p_exploration, allowed_tools=p_tools,
+        )
+        if isinstance(planner_prov.last_usage, UsageInfo):
+            ctx.session.usage.record("planner", planner_prov.last_usage)
         write_cached_plan(key, planned)
 
     ctx.console.print(f"\n[bold]Plan ({len(planned.units)} units):[/bold]")
@@ -240,6 +354,8 @@ def handle_draft(ctx: HandlerContext) -> HandlerResult:
 
     ctx.console.print(f"Drafting {filepath} with {drafter_m}...")
     drafted = drafter_prov.generate(prompt=prompt, model=drafter_m)
+    if isinstance(drafter_prov.last_usage, UsageInfo):
+        ctx.session.usage.record("drafter", drafter_prov.last_usage)
     cleaned = _strip_code_fences(drafted)
 
     original = read_file_safe(Path(ctx.session.repo_root) / filepath)
@@ -267,6 +383,7 @@ def handle_review(ctx: HandlerContext) -> HandlerResult:
 
     reviewer_p, reviewer_m = get_route(ctx.config, "reviewer")
     reviewer_prov = get_provider(reviewer_p, ctx.config.providers[reviewer_p])
+    r_exploration, r_tools = _exploration_for_role(ctx.config, "reviewer")
 
     content = read_file_safe(Path(ctx.session.repo_root) / filepath)
     prompt = (
@@ -278,7 +395,12 @@ def handle_review(ctx: HandlerContext) -> HandlerResult:
     )
 
     ctx.console.print(f"Reviewing {filepath} with {reviewer_m}...")
-    output = reviewer_prov.generate(prompt=prompt, model=reviewer_m)
+    output = reviewer_prov.generate(
+        prompt=prompt, model=reviewer_m,
+        exploration=r_exploration, allowed_tools=r_tools,
+    )
+    if isinstance(reviewer_prov.last_usage, UsageInfo):
+        ctx.session.usage.record("reviewer", reviewer_prov.last_usage)
 
     ctx.console.print("\n[bold]Review Output:[/bold]")
     ctx.console.print(output)

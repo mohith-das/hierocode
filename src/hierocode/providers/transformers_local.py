@@ -1,5 +1,7 @@
 from typing import List
+from hierocode.broker.usage import UsageInfo
 from hierocode.providers.base import BaseProvider
+
 
 class TransformersLocalProvider(BaseProvider):
     """
@@ -18,4 +20,13 @@ class TransformersLocalProvider(BaseProvider):
         return []
 
     def generate(self, prompt: str, model: str, **options) -> str:
+        # Zero-token stub so the interface is uniform even though no real
+        # inference happens here yet.
+        self.last_usage = UsageInfo(
+            input_tokens=0,
+            output_tokens=0,
+            messages=0,
+            provider_type="transformers_local",
+            model=model,
+        )
         return ""

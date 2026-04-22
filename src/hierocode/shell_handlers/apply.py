@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from hierocode.broker.patcher import PatchParseError, apply_patch, parse_diff
 from hierocode.cli_shell import HandlerContext, HandlerResult
+from hierocode.shell_handlers._prompts import ApplyChoice, prompt_apply_choice
 
 
 def handle_apply(ctx: HandlerContext) -> HandlerResult:
@@ -29,18 +30,31 @@ def handle_apply(ctx: HandlerContext) -> HandlerResult:
             f"+{p.line_count_added} / -{p.line_count_removed})"
         )
 
+    skip_confirmation = False
     applied = 0
     skipped = 0
     errors = 0
 
     for p in patches:
-        choice = _confirm(ctx.console, p)
-        if choice == "q":
-            ctx.console.print("[yellow]Aborted remaining patches.[/yellow]")
+        if skip_confirmation:
+            choice = ApplyChoice.YES
+        else:
+            choice = prompt_apply_choice(
+                p.path, p.line_count_added, p.line_count_removed, p.action.value
+            )
+
+        if choice == ApplyChoice.ABORT:
+            ctx.console.print("[yellow]Aborted.[/yellow]")
             break
-        if choice in ("n", "s"):
+
+        if choice == ApplyChoice.SKIP:
             skipped += 1
             continue
+
+        if choice == ApplyChoice.YES_ALL:
+            skip_confirmation = True
+
+        # YES or YES_ALL: apply the patch.
         result = apply_patch(p, ctx.session.repo_root)
         if result.status == "applied":
             ctx.console.print(f"  [green]wrote[/green] {p.path}")
@@ -56,22 +70,22 @@ def handle_apply(ctx: HandlerContext) -> HandlerResult:
 
 
 def _confirm(console, patch) -> str:
-    """Prompt the user for per-file apply confirmation.
+    """Legacy thin wrapper kept for backward compatibility.
 
-    Returns one of 'y', 'n', 's' (skip), or 'q' (quit all remaining).
-    Default on blank/unknown input is 'n'.
+    Delegates to prompt_apply_choice and maps ApplyChoice back to the old
+    single-character codes used by pre-W27 tests that still patch this function.
+    New code should call prompt_apply_choice directly.
     """
-    try:
-        raw = input(f"Apply to {patch.path}? [y/N/s(kip)/q(uit)]: ").strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        return "n"
-    if raw in ("y",):
+    choice = prompt_apply_choice(
+        patch.path, patch.line_count_added, patch.line_count_removed, patch.action.value
+    )
+    if choice == ApplyChoice.YES:
         return "y"
-    if raw in ("s", "skip"):
-        return "s"
-    if raw in ("q", "quit"):
+    if choice == ApplyChoice.YES_ALL:
+        return "y"
+    if choice == ApplyChoice.ABORT:
         return "q"
-    return "n"
+    return "n"  # SKIP
 
 
 def register_all(registry) -> None:

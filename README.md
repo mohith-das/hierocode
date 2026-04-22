@@ -2,9 +2,13 @@
 
 **Hierarchical coding with cost-aware model delegation.**
 
-Frontier models plan and review; local models write the code. A $17/mo Claude Pro
-subscription paired with a laptop running Ollama gives you a full agentic coding
-workflow at $0 incremental cost per task.
+Frontier models plan and review; local models write the code. Cost per task is
+$0 incremental on a bring-your-own-subscription setup.
+
+**You bring:** (1) Python ≥3.10, (2) a local Ollama server with at least one
+model pulled, and (3) one of — a Claude Pro / ChatGPT Plus subscription, an
+Anthropic API key, or (degraded) a second local model for planning. Details in
+[Before you install](#before-you-install) below.
 
 ## Why hierocode
 
@@ -46,6 +50,10 @@ This is where the actual code gets written. Runs entirely on your hardware, $0 p
 
 # Pull a drafter model (~2 GB for llama3.2:3b)
 ollama pull llama3.2:3b
+
+# Verify the Ollama server is running (most installers auto-start it):
+curl -fsS http://localhost:11434/ >/dev/null && echo "ollama: ok"
+# If not running: `ollama serve` (macOS/Linux) or start the tray app (Windows).
 ```
 
 Model size the wizard picks for you based on RAM:
@@ -65,7 +73,7 @@ exactly one of these paths configured:
 | Path                   | Cost per task       | Setup                                                                                          |
 |------------------------|---------------------|------------------------------------------------------------------------------------------------|
 | **Claude Pro** ($17/mo) | $0 incremental     | Install [Claude Code](https://docs.anthropic.com/claude/docs/claude-code), run `claude /login` |
-| **ChatGPT Plus** ($20/mo) | $0 incremental   | Install Codex CLI, run `codex login`                                                           |
+| **ChatGPT Plus** ($20/mo) | $0 incremental   | Install [Codex CLI](https://github.com/openai/codex), run `codex login`                        |
 | **Anthropic API key**  | ~$0.01–0.15/task    | `export ANTHROPIC_API_KEY=sk-...`                                                              |
 
 **No subscription or API key?** Hierocode falls back to using Ollama as the planner
@@ -178,6 +186,17 @@ The 4-call estimate breaks down as:
 
 Token counts use a char/4 heuristic (not tiktoken) with a 20% safety margin.
 
+**Pricing can be overridden** — drop `~/.hierocode/pricing.yaml` with your own
+model prices and subscription limits. Useful when Anthropic ships a new model
+before hierocode does, or when you want to track quota math for a different
+subscription tier. See `plan.md` or `broker/pricing.py` for the schema.
+
+**Advanced: active exploration** — set `routing.planner.exploration: active`
+in your config to let Claude Code / Codex use their `Read`/`Grep`/`Glob`
+tools during planning. Plans get noticeably better; token cost goes up
+(still 1 message against your Pro/Plus quota, but input tokens compound
+within that message). Off by default to preserve the predictable cost story.
+
 ## Commands
 
 ### Setup
@@ -221,6 +240,40 @@ hierocode models set planner claude-haiku-4-5 -p claude_pro  # With explicit pro
 hierocode cache clear                                   # Delete all cached plans
 hierocode version                                       # Print installed version
 ```
+
+## Interactive TUI
+
+Run `hierocode` with no arguments to enter a persistent REPL (requires a config
+to exist; run `hierocode init --wizard` first). The TUI provides slash commands
+for every one-shot subcommand above plus a few extras:
+
+```
+/run <task>                     Full plan → draft → QA pipeline, with live
+                                progress panel (plan units, elapsed time,
+                                token counts, quota bar).
+/plan <task>                    Plan only; /plan show re-displays the last plan.
+/estimate <task>                Cost/quota preview without executing.
+/draft <task> <file>            Single-file escape hatch.
+/review <task> <file>           Single-file review.
+/diff                           Re-display the last diff.
+/apply                          Apply the last diff to disk with per-file
+                                confirmation (y / yes-all / skip / abort).
+/usage                          Per-role token/message usage for the session,
+                                with a quota bar if on a subscription path.
+/models                         Show current role bindings.
+/models set <role> <model>      Update routing, persists to YAML.
+/cache clear                    Wipe cached plans.
+/config edit                    Open ~/.hierocode.yaml in $EDITOR.
+/doctor /resources /repo        Diagnostics.
+/task save <name> <desc>        Save a named task alias (persisted).
+/task <name>                    Run a saved alias.
+/task list / /task delete <n>   Alias CRUD.
+/history /clear /help /exit
+```
+
+Plain-text input (no leading `/`) can either prompt before running or dispatch
+directly to `/run` — set `tui.interaction_mode` in your config to `prompt`
+(default, safer) or `immediate`.
 
 ## Configuration reference
 

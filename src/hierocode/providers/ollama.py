@@ -1,5 +1,6 @@
 import httpx
 from typing import List
+from hierocode.broker.usage import UsageInfo
 from hierocode.providers.base import BaseProvider
 from hierocode.exceptions import ProviderConnectionError, ModelNotFoundError
 
@@ -30,6 +31,7 @@ class OllamaProvider(BaseProvider):
             raise ProviderConnectionError(f"Ollama returned an error status: {e.response.status_code}")
 
     def generate(self, prompt: str, model: str, **options) -> str:
+        self.last_usage = None
         try:
             payload = {
                 "model": model,
@@ -41,7 +43,15 @@ class OllamaProvider(BaseProvider):
 
             r = self.client.post(f"{self.base_url}/api/generate", json=payload)
             r.raise_for_status()
-            return r.json().get("response", "")
+            data = r.json()
+            self.last_usage = UsageInfo(
+                input_tokens=int(data.get("prompt_eval_count", 0) or 0),
+                output_tokens=int(data.get("eval_count", 0) or 0),
+                messages=0,
+                provider_type="ollama",
+                model=model,
+            )
+            return data.get("response", "")
         except httpx.RequestError as e:
             raise ProviderConnectionError(f"Failed to reach Ollama at {self.base_url}: {e}")
         except httpx.HTTPStatusError as e:
