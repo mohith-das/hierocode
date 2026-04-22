@@ -1,10 +1,11 @@
 *.pyc
 __pycache__/
 *.egg-info/
-.venv/
+.venv*/
 venv/
 dist/
 build/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+plan.md
