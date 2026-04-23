@@ -97,7 +97,10 @@ class QAVerdict(BaseModel):
 
     @model_validator(mode="after")
     def validate_action_constraints(self) -> "QAVerdict":
-        """Enforce per-action field requirements."""
+        """Enforce per-action field requirements. Treats empty collections as
+        equivalent to None — many LLMs emit `"feedback": ""` or `"sub_units": []`
+        for accept/escalate instead of omitting the key, which is a valid
+        semantic match for "no feedback / no sub_units"."""
         if self.action == "revise":
             if not self.feedback:
                 raise ValueError("QAVerdict with action='revise' requires non-empty feedback")
@@ -105,11 +108,11 @@ class QAVerdict(BaseModel):
             if not self.sub_units:
                 raise ValueError("QAVerdict with action='split' requires non-empty sub_units")
         elif self.action in ("accept", "escalate"):
-            if self.feedback is not None:
+            if self.feedback:
                 raise ValueError(
                     f"QAVerdict with action='{self.action}' must not have feedback"
                 )
-            if self.sub_units is not None:
+            if self.sub_units:
                 raise ValueError(
                     f"QAVerdict with action='{self.action}' must not have sub_units"
                 )

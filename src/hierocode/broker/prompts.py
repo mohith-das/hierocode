@@ -70,6 +70,13 @@ Design each TaskUnit so that:
 - `len(target_files) + len(context_files)` ≤ {profile.max_files_per_unit}
 - The goal is achievable by a {param_str} local model with no external context.
 
+**File path convention (IMPORTANT):** every entry in `target_files` and
+`context_files` MUST be relative to the repo root. Do **not** include the
+repo's top-level directory name as a prefix — even though the skeleton
+displays it as a header. For example, if the skeleton shows `myproj/` at
+the top and a file `src/app.py` under it, write `"src/app.py"`, not
+`"myproj/src/app.py"`.
+
 ## Required JSON Schema
 
 Your response must match this structure exactly:

@@ -161,3 +161,21 @@ class TestCodexCliRegressions:
         assert _PROVIDER.last_usage.input_tokens == 1234
         assert _PROVIDER.last_usage.output_tokens == 56
         assert _PROVIDER.last_usage.messages == 1
+
+    def test_generate_default_timeout_is_at_least_5_minutes(self):
+        """Regression: 180s default bit QA calls on non-trivial skeleton + diff.
+        Bumped to 300s (5 min) in v0.3.5."""
+        stdout = '{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}\n'
+        with patch("subprocess.run", return_value=_completed(stdout=stdout)) as mock_run:
+            _PROVIDER.generate("hi", model="")
+        kwargs = mock_run.call_args.kwargs
+        assert kwargs.get("timeout", 0) >= 300, (
+            f"default codex timeout too short: {kwargs.get('timeout')!r}"
+        )
+
+    def test_generate_explicit_timeout_wins_over_default(self):
+        """Caller can still pass a custom timeout via options."""
+        stdout = '{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}\n'
+        with patch("subprocess.run", return_value=_completed(stdout=stdout)) as mock_run:
+            _PROVIDER.generate("hi", model="", timeout=42)
+        assert mock_run.call_args.kwargs.get("timeout") == 42

@@ -54,7 +54,9 @@ class CodexCliProvider(BaseProvider):
 
         cmd.append(effective_prompt)
 
-        timeout = options.get("timeout", 180)
+        # Default 300s — codex QA calls with full skeleton + diff often take
+        # 60-120s on first turn; 180s was biting even simple runs.
+        timeout = options.get("timeout", 300)
         cwd = options.get("cwd")
 
         try:

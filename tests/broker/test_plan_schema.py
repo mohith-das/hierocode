@@ -153,6 +153,30 @@ class TestQAVerdict:
         assert v.feedback is None
         assert v.sub_units is None
 
+    def test_qa_accept_allows_empty_sub_units_list(self):
+        """Regression: LLMs often emit `sub_units: []` rather than null for
+        accept/escalate. Empty list is semantically equivalent to None here."""
+        v = QAVerdict(action="accept", sub_units=[])
+        assert v.action == "accept"
+        assert v.sub_units == []
+
+    def test_qa_accept_allows_empty_feedback_string(self):
+        """Regression: LLMs often emit `feedback: ""` rather than null for
+        accept/escalate. Empty string is semantically equivalent to None here."""
+        v = QAVerdict(action="accept", feedback="")
+        assert v.action == "accept"
+        assert v.feedback == ""
+
+    def test_qa_escalate_allows_empty_sub_units_list(self):
+        v = QAVerdict(action="escalate", sub_units=[])
+        assert v.action == "escalate"
+
+    def test_qa_accept_still_rejects_populated_sub_units(self):
+        """Truthiness check only — a non-empty sub_units list still errors."""
+        u = TaskUnit(id="s1", goal="sub", target_files=["x.py"])
+        with pytest.raises(ValueError, match="sub_units"):
+            QAVerdict(action="accept", sub_units=[u])
+
     def test_qa_escalate_with_reason(self):
         v = QAVerdict(action="escalate", reason="Too complex for drafter")
         assert v.reason == "Too complex for drafter"

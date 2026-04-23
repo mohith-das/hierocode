@@ -55,6 +55,25 @@ def _strip_code_fences(text: str) -> str:
     return "\n".join(lines)
 
 
+def _normalize_target(target: str, repo_root: Path | str) -> str:
+    """Strip a leading repo-root basename prefix from a planner-supplied path.
+
+    The repo skeleton shown to the planner begins with a header line like
+    ``fb-claude/`` (the directory's basename). Some planners mistake this for
+    a parent path component and emit `target_files: ["fb-claude/index.html"]`.
+    Those paths resolve to `<repo_root>/fb-claude/index.html` which doesn't
+    exist and produces diffs that `git apply` rejects. Normalize away the
+    prefix so on-disk paths match reality.
+    """
+    root_name = Path(repo_root).resolve().name
+    if not root_name:
+        return target
+    parts = Path(target).parts
+    if len(parts) > 1 and parts[0] == root_name:
+        return str(Path(*parts[1:]))
+    return target
+
+
 def _draft_and_diff(
     unit: TaskUnit,
     prompt: str,
@@ -71,7 +90,7 @@ def _draft_and_diff(
     )
     cleaned = _strip_code_fences(drafted)
     if unit.target_files:
-        target = unit.target_files[0]
+        target = _normalize_target(unit.target_files[0], repo_root)
         original = read_file_safe(Path(repo_root) / target)
         return generate_unified_diff(original, cleaned, target)
     return cleaned
@@ -94,7 +113,7 @@ def _escalate(
     )
     cleaned = _strip_code_fences(drafted)
     if unit.target_files:
-        target = unit.target_files[0]
+        target = _normalize_target(unit.target_files[0], repo_root)
         original = read_file_safe(Path(repo_root) / target)
         return generate_unified_diff(original, cleaned, target)
     return cleaned

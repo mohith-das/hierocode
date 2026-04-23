@@ -3,7 +3,12 @@
 from unittest.mock import MagicMock, patch
 
 
-from hierocode.broker.dispatcher import DispatchResult, _strip_code_fences, run_plan
+from hierocode.broker.dispatcher import (
+    DispatchResult,
+    _normalize_target,
+    _strip_code_fences,
+    run_plan,
+)
 from hierocode.broker.plan_schema import CapacityProfile, Plan, QAVerdict, TaskUnit
 from hierocode.broker.progress import ProgressReporter
 
@@ -538,3 +543,41 @@ def test_run_plan_forwards_reviewer_exploration_to_review_draft(
     call_kwargs = mock_review.call_args.kwargs
     assert call_kwargs.get("exploration") == "active"
     assert call_kwargs.get("allowed_tools") == ["Read"]
+
+
+# ---------------------------------------------------------------------------
+# test_normalize_target — regression for v0.3.5 bug #1
+# ---------------------------------------------------------------------------
+
+class TestNormalizeTarget:
+    """Regression tests for _normalize_target.
+
+    Bug: the repo skeleton renders the repo-root basename as a top-level line
+    (e.g. `fb-claude/`), which some planners mistake for a parent path segment
+    and emit into `target_files` as a prefix. That produced diffs pointing at
+    `<repo>/fb-claude/index.html` which git apply then rejected.
+    """
+
+    def test_strips_repo_name_prefix(self):
+        assert _normalize_target(
+            "fb-claude/index.html", "/Users/x/Desktop/fb-claude"
+        ) == "index.html"
+
+    def test_strips_repo_name_prefix_nested(self):
+        assert _normalize_target(
+            "myproj/src/app.py", "/tmp/myproj"
+        ) == "src/app.py"
+
+    def test_passthrough_when_no_prefix_match(self):
+        assert _normalize_target(
+            "index.html", "/Users/x/Desktop/fb-claude"
+        ) == "index.html"
+
+    def test_passthrough_when_genuine_subdir(self):
+        assert _normalize_target(
+            "src/app.py", "/tmp/unrelated"
+        ) == "src/app.py"
+
+    def test_handles_empty_repo_root(self):
+        # Defensive: empty or pathological repo_root should never crash
+        assert _normalize_target("index.html", "") == "index.html"
