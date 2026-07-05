@@ -18,7 +18,14 @@ driving API costs into the dollars-per-task range quickly. Subscription plans (C
 Pro, ChatGPT Plus) are cheaper on a per-message basis but have soft quotas — burning
 them on code generation leaves nothing for the rest of your workday.
 
-Hierocode splits the work by role. The planner (your Claude Pro or ChatGPT Plus
+Hierocode solves this by letting you delegate bounded drafting work to a local 
+model running on your own hardware via **MCP (Model Context Protocol)**. This lets 
+agents like Claude Code or Cursor handle the reasoning, while your local machine 
+does the heavy lifting of writing code for $0. Hierocode stays completely read-only 
+for safety—the host agent applies the resulting patches using its own sandboxed tooling.
+
+For users who prefer a standalone experience, hierocode also includes a TUI pipeline 
+that splits work by role. The planner (your Claude Pro or ChatGPT Plus
 subscription, or an API key) turns your task into a structured JSON work breakdown
 and QAs the result. The drafter (a local Ollama model) does the actual code writing
 for each bounded unit. The reviewer defaults to the planner tier. Planner calls are
@@ -118,6 +125,48 @@ wizard still works: `hierocode init --wizard` detects the env var and routes the
 planner through the Anthropic Messages API using `claude-haiku-4-5` by default.
 Run `hierocode models set planner claude-sonnet-4-6` afterward if you want a stronger
 planner. All other steps are identical to the $17 journey above.
+
+## Use hierocode from Claude Code / Codex / opencode (MCP)
+
+Hierocode provides an MCP server so any MCP-capable coding agent can delegate bounded, single-file drafting work to your local model. 
+
+In this mode, the *host agent* acts as the planner and reviewer. Hierocode exposes the local drafter as a tool. The MCP server profiles the local model, packs context into its envelope, gets a draft using SEARCH/REPLACE edit blocks to prevent truncating large files, and returns a unified diff. The host applies the diff itself. **The MCP server never writes files.**
+
+### Setup per host
+
+**Claude Code:**
+```bash
+claude mcp add hierocode -- hierocode mcp
+```
+
+**Codex CLI (`~/.codex/config.toml`):**
+```toml
+[mcp_servers.hierocode]
+command = "hierocode"
+args = ["mcp"]
+```
+
+**opencode (`opencode.json`):**
+```json
+{
+  "mcp": {
+    "hierocode": {
+      "type": "local",
+      "command": ["hierocode", "mcp"]
+    }
+  }
+}
+```
+
+## Headless usage
+
+You can use the headless draft engine directly from the CLI without starting the full TUI pipeline:
+
+```bash
+hierocode draft --goal "add a docstring to the main function" --target src/app.py --json
+```
+
+This will run the draft process exactly like the MCP server and output a full `DraftResult` JSON object containing the unified diff.
 
 ## Architecture
 
