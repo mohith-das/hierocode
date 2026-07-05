@@ -26,7 +26,7 @@ class DraftResult:
     warnings: list[str] = field(default_factory=list)
     input_tokens: int = 0
     output_tokens: int = 0
-    error_type: Optional[str] = None      # "config" | "provider" | "budget" | "empty"
+    error_type: Optional[str] = None  # "config" | "provider" | "budget" | "empty" | "edit_apply"
     error_message: Optional[str] = None
     suggestion: Optional[str] = None
 
@@ -114,6 +114,15 @@ def draft_unit(
         diff_str = generate_unified_diff(original, new_content, target)
         return diff_str or "", new_content, used_blocks
 
+    def _consume_usage() -> tuple[int, int]:
+        # Records the most recent provider call; when a retry happened, the first
+        # call's usage is dropped (same accepted limitation as qa.review_draft).
+        if isinstance(provider.last_usage, UsageInfo):
+            if usage is not None:
+                usage.record("drafter", provider.last_usage)
+            return provider.last_usage.input_tokens, provider.last_usage.output_tokens
+        return 0, 0
+
     try:
         try:
             diff, new_content, used_blocks = _do_draft(prompt)
@@ -123,23 +132,28 @@ def draft_unit(
             )
             try:
                 diff, new_content, used_blocks = _do_draft(revision_prompt)
-            except EditApplyError:
-                diff = ""
-                used_blocks = True
-                
+            except EditApplyError as exc_retry:
+                input_tokens, output_tokens = _consume_usage()
+                return DraftResult(
+                    status="error",
+                    error_type="edit_apply",
+                    drafter_model=model_name,
+                    included_files=packed.included_files,
+                    skipped_files=packed.skipped_files,
+                    warnings=warnings,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    error_message=(
+                        f"the drafter's edit blocks could not be applied after one retry: {exc_retry}"
+                    ),
+                    suggestion="handle this edit yourself or configure a larger drafter model",
+                )
+
         if mode == "edit_blocks" and not used_blocks:
             warnings.append("drafter ignored edit-block format; whole-file replacement used")
-                    
-        # Accumulate usage if available
-        if isinstance(provider.last_usage, UsageInfo):
-            if usage is not None:
-                usage.record("drafter", provider.last_usage)
-            input_tokens = provider.last_usage.input_tokens
-            output_tokens = provider.last_usage.output_tokens
-        else:
-            input_tokens = 0
-            output_tokens = 0
-            
+
+        input_tokens, output_tokens = _consume_usage()
+
         if diff is None or not diff.strip():
             return DraftResult(
                 status="error",

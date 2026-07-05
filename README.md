@@ -276,7 +276,8 @@ hierocode run -t "..."                       # Full pipeline: plan -> draft -> Q
 hierocode run -t "..." --estimate            # Print cost/quota estimate, then exit
 hierocode run -t "..." --drafter-model <m>   # Override drafter model
 hierocode run -t "..." --repo ./path         # Set repo root for skeleton builder
-hierocode draft -t "..." --file path/to/file # Draft a patch for a single file
+hierocode draft --goal "..." --target path/to/file  # Headless single-file draft (diff on stdout)
+hierocode mcp                                # Run the stdio MCP server
 hierocode review -t "..." --file path/to/file # Review a single file
 ```
 

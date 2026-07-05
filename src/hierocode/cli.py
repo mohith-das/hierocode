@@ -484,11 +484,12 @@ def review(
         raise typer.Exit(code=1)
 
 
-if __name__ == "__main__":
-    app()
-
 @app.command()
 def mcp():
     """Run the stdio MCP server."""
     from hierocode.mcp_server import main as mcp_main
     mcp_main()
+
+
+if __name__ == "__main__":
+    app()

@@ -87,6 +87,41 @@ def test_engine_empty_diff(tmp_path):
                     repo_root=tmp_path,
                     config=config
                 )
-                
+
                 assert result.status == "error"
                 assert result.error_type == "empty"
+
+def test_engine_edit_apply_failure_reported(tmp_path):
+    """Malformed edit blocks on both attempts → error_type='edit_apply', not 'empty'."""
+    (tmp_path / "target.py").write_text("def foo():\n    pass\n")
+
+    config = MagicMock(spec=HierocodeConfig)
+    config.providers = {"drafter_provider": MagicMock()}
+
+    # Missing '=======' divider — parse_edit_blocks raises EditApplyError every time.
+    malformed = "<<<<<<< SEARCH\ndef foo():\n>>>>>>> REPLACE"
+
+    with patch("hierocode.engine.get_route", return_value=("drafter_provider", "model")):
+        with patch("hierocode.engine.get_provider") as mock_get_provider:
+            provider = MagicMock()
+            provider.generate.return_value = malformed
+            mock_get_provider.return_value = provider
+
+            with patch("hierocode.engine.build_capacity_profile") as mock_build_profile:
+                profile = MagicMock()
+                profile.max_input_tokens = 1000
+                profile.max_output_tokens = 1000
+                profile.max_files_per_unit = 10
+                mock_build_profile.return_value = profile
+
+                result = draft_unit(
+                    goal="g",
+                    target_file="target.py",
+                    repo_root=tmp_path,
+                    config=config
+                )
+
+                assert result.status == "error"
+                assert result.error_type == "edit_apply"
+                assert "could not be applied" in result.error_message
+                assert provider.generate.call_count == 2  # one retry, then give up

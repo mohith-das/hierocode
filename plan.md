@@ -34,7 +34,7 @@ task aliases persist in `~/.hierocode.yaml`.
 | Cleanup | 0.2.0 | Removed v0.1 dead code (ranking, workers, escalation stub, legacy prompts/context/slicer), legacy schema fields; README rewritten for v0.2 | 271 |
 | v0.3 | 0.3.0 | Persistent TUI via `prompt_toolkit`, 21+ slash commands, `/apply` patcher, named task aliases | 384 |
 | v0.3.1 + v0.3.2 (combined) | **0.3.2** | Usage tracking + `/usage`, live progress panel, permission dialogs with `warn_before_escalation`, opt-in active exploration for planner/reviewer, file-based pricing override + QuotaTracker with warning thresholds | 504 |
-| v0.4 | 0.4.0 | MCP server + provider option layer + edit blocks + 8 correctness fixes | 597 |
+| v0.4 | 0.4.0 | MCP server + provider option layer + edit blocks + 8 correctness fixes | 603 |
 
 ## Current state snapshot (v0.3.0)
 
