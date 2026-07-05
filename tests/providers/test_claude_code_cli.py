@@ -29,8 +29,11 @@ def test_generate_invokes_claude_cli(provider):
     with patch("subprocess.run", return_value=mock_result) as mock_run:
         provider.generate("my prompt", "claude-sonnet-4-6")
         cmd = mock_run.call_args[0][0]
+        kwargs = mock_run.call_args[1]
     assert "claude" in cmd
     assert "-p" in cmd
+    assert "my prompt" not in cmd
+    assert kwargs["input"] == "my prompt"
     assert "--output-format" in cmd
     assert "json" in cmd
     assert "--model" in cmd

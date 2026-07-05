@@ -35,8 +35,13 @@ class CodexCliProvider(BaseProvider):
         default, so the system string (if provided) is prepended to the prompt text.
         We always pass `--skip-git-repo-check` so hierocode works outside a git repo.
         """
-        system = options.get("system")
+        from hierocode.providers.options import parse_options
+        opts = parse_options(options)
+        
+        system = opts.system
         effective_prompt = f"{system}\n\n{prompt}" if system else prompt
+        if opts.json_mode:
+            effective_prompt = "Respond with valid JSON only. No prose, no code fences.\n\n" + effective_prompt
 
         cmd = ["codex", "exec", "--skip-git-repo-check", "--json"]
 
@@ -47,7 +52,7 @@ class CodexCliProvider(BaseProvider):
         if model and model.lower() != "default":
             cmd += ["--model", model]
 
-        if options.get("exploration") == "active":
+        if opts.exploration == "active":
             # Read-only sandbox lets the model use Read/Grep/Glob without letting
             # it edit files — hierocode's drafter owns edits.
             cmd += ["--sandbox", "read-only"]
@@ -56,8 +61,8 @@ class CodexCliProvider(BaseProvider):
 
         # Default 300s — codex QA calls with full skeleton + diff often take
         # 60-120s on first turn; 180s was biting even simple runs.
-        timeout = options.get("timeout", 300)
-        cwd = options.get("cwd")
+        timeout = opts.timeout or 300
+        cwd = opts.cwd
 
         try:
             # stdin=DEVNULL — codex exec reads extra input from stdin if connected

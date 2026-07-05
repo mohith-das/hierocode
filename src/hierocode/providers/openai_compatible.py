@@ -8,6 +8,9 @@ from hierocode.auth.helpers import resolve_auth_token
 class OpenAICompatibleProvider(BaseProvider):
     """Provides access to OpenAI-compatible generic endpoints."""
 
+    _METADATA_TIMEOUT = 10.0
+    _GENERATE_TIMEOUT = 600.0
+
     def __init__(self, name: str, config, **kwargs):
         super().__init__(name, config)
         self.base_url = self.config.base_url
@@ -24,7 +27,7 @@ class OpenAICompatibleProvider(BaseProvider):
         if self.auth_token:
             headers["Authorization"] = f"Bearer {self.auth_token}"
             
-        self.client = httpx.Client(headers=headers)
+        self.client = httpx.Client(headers=headers, timeout=httpx.Timeout(self._METADATA_TIMEOUT))
 
     def healthcheck(self) -> bool:
         try:
@@ -45,15 +48,33 @@ class OpenAICompatibleProvider(BaseProvider):
             raise ProviderConnectionError(f"Provider {self.name} returned an error status: {e.response.status_code}")
 
     def generate(self, prompt: str, model: str, **options) -> str:
+        from hierocode.providers.options import parse_options
+        opts = parse_options(options)
+
         self.last_usage = None
         try:
+            messages = []
+            if opts.system:
+                messages.append({"role": "system", "content": opts.system})
+            if opts.json_mode:
+                messages.append({"role": "system", "content": "Respond with valid JSON only. No prose, no code fences."})
+            
+            messages.append({"role": "user", "content": prompt})
+                
             payload = {
                 "model": model,
-                "messages": [{"role": "user", "content": prompt}],
-                **options
+                "messages": messages,
             }
+            if opts.max_tokens is not None:
+                payload["max_tokens"] = opts.max_tokens
+            if opts.temperature is not None:
+                payload["temperature"] = opts.temperature
 
-            r = self.client.post(f"{self.base_url}/chat/completions", json=payload)
+            r = self.client.post(
+                f"{self.base_url}/chat/completions",
+                json=payload,
+                timeout=opts.timeout or self._GENERATE_TIMEOUT
+            )
             r.raise_for_status()
             data = r.json()
             usage = data.get("usage", {}) or {}

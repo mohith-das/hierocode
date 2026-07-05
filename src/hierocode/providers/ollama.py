@@ -36,20 +36,33 @@ class OllamaProvider(BaseProvider):
             raise ProviderConnectionError(f"Ollama returned an error status: {e.response.status_code}")
 
     def generate(self, prompt: str, model: str, **options) -> str:
+        from hierocode.providers.options import parse_options
+        opts = parse_options(options)
+
         self.last_usage = None
         try:
             payload = {
                 "model": model,
                 "prompt": prompt,
-                "stream": False
+                "stream": False,
+                "options": {}
             }
-            if options:
-                payload["options"] = options
+            if opts.max_tokens is not None:
+                payload["options"]["num_predict"] = opts.max_tokens
+            if opts.temperature is not None:
+                payload["options"]["temperature"] = opts.temperature
+            if not payload["options"]:
+                del payload["options"]
+                
+            if opts.system:
+                payload["system"] = opts.system
+            if opts.json_mode:
+                payload["format"] = "json"
 
             r = self.client.post(
                 f"{self.base_url}/api/generate",
                 json=payload,
-                timeout=self._GENERATE_TIMEOUT,
+                timeout=opts.timeout or self._GENERATE_TIMEOUT,
             )
             r.raise_for_status()
             data = r.json()

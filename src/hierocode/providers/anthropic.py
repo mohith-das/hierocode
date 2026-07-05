@@ -101,15 +101,17 @@ class AnthropicProvider(BaseProvider):
         **options,
     ) -> str:
         """Generate a response; supports prompt caching via cache_control blocks."""
+        from hierocode.providers.options import parse_options
+        opts = parse_options(options)
+        
         client = self._get_client()
-        max_tokens = options.get("max_tokens", 4096)
+        max_tokens = opts.max_tokens if opts.max_tokens is not None else 4096
         system_parts = []
 
-        system_kwarg = options.get("system")
-        if system_kwarg:
-            system_parts.append(system_kwarg)
+        if opts.system:
+            system_parts.append(opts.system)
 
-        if options.get("json_mode"):
+        if opts.json_mode:
             system_parts.append("Respond with valid JSON only. No prose, no code fences.")
 
         system_text = "\n\n".join(system_parts) if system_parts else None
@@ -122,6 +124,8 @@ class AnthropicProvider(BaseProvider):
             cache=cache,
             cache_user_prefix=cache_user_prefix,
         )
+        if opts.temperature is not None:
+            create_kwargs["temperature"] = opts.temperature
 
         self.last_usage = None
         try:

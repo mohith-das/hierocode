@@ -31,12 +31,15 @@ class ClaudeCodeCliProvider(BaseProvider):
         return list(ANTHROPIC_MODELS)
 
     def generate(self, prompt: str, model: str, **options) -> str:
-        """Invoke `claude -p <prompt> --output-format json` and return the text result."""
-        timeout = options.get("timeout", 180)
-        cwd = options.get("cwd")
-        system = options.get("system")
+        """Invoke `claude -p --output-format json` with prompt on stdin."""
+        from hierocode.providers.options import parse_options
+        opts = parse_options(options)
+        
+        timeout = opts.timeout or 180
+        cwd = opts.cwd
+        system = opts.system
 
-        cmd = ["claude", "-p", prompt, "--output-format", "json"]
+        cmd = ["claude", "-p", "--output-format", "json"]
 
         if system:
             cmd += ["--append-system-prompt", system]
@@ -44,14 +47,15 @@ class ClaudeCodeCliProvider(BaseProvider):
         if model:
             cmd += ["--model", model]
 
-        if options.get("exploration") == "active":
-            tools = options.get("allowed_tools") or _DEFAULT_ACTIVE_TOOLS
+        if opts.exploration == "active":
+            tools = opts.allowed_tools or _DEFAULT_ACTIVE_TOOLS
             cmd += ["--allowedTools", ",".join(tools)]
             cmd += ["--disallowedTools", "Write,Edit,Bash"]
 
         try:
             result = subprocess.run(
                 cmd,
+                input=prompt,
                 capture_output=True,
                 text=True,
                 timeout=timeout,
