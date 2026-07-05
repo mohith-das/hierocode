@@ -406,84 +406,46 @@ def run(
         log_error(str(e))
         raise typer.Exit(code=1)
 
-
 @app.command()
 def draft(
-    task: str = typer.Option(..., "--task", "-t", help="The coding task."),
-    filepath: str = typer.Option(..., "--file", "-f", help="Target file to modify."),
-    drafter_model: str = typer.Option(None, "--drafter-model", help="Override drafter model."),
-    apply: bool = typer.Option(False, "--apply", "-a",
-                               help="Write the drafted diff to disk immediately, no prompt."),
+    goal: str = typer.Option(..., "--goal", help="The goal for the drafter to accomplish."),
+    target: str = typer.Option(..., "--target", help="The single file to modify."),
+    context: list[str] = typer.Option(None, "--context", help="Additional files to include as context."),
+    acceptance: str = typer.Option("", "--acceptance", help="How to tell the unit is complete."),
+    repo_root: str = typer.Option(".", "--repo-root", help="Path to the repository root."),
+    json_out: bool = typer.Option(False, "--json", help="Emit full DraftResult as JSON."),
 ):
-    """Draft a single-file patch using the drafter role. Single-file escape hatch for `run`."""
-    try:
-        conf = load_config()
-        from pathlib import Path
+    """Draft a single-file patch using the local engine. Emits a unified diff on stdout."""
+    import sys
+    import json
+    from dataclasses import asdict
+    from hierocode.engine import draft_unit
 
-        from hierocode.broker.budget import pack_context
-        from hierocode.broker.capacity import build_capacity_profile
-        from hierocode.broker.plan_schema import TaskUnit
-        from hierocode.broker.prompts import build_drafter_prompt
-        from hierocode.repo.diffing import generate_unified_diff
-        from hierocode.repo.files import read_file_safe
+    result = draft_unit(
+        goal=goal,
+        target_file=target,
+        repo_root=repo_root,
+        context_files=context,
+        acceptance=acceptance,
+    )
 
-        drafter_p, drafter_m = _resolve_route(conf, "drafter", drafter_model)
-        drafter_prov = get_provider(drafter_p, conf.providers[drafter_p])
+    if json_out:
+        print(json.dumps(asdict(result)))
+        sys.exit(0 if result.status == "ok" else 1)
 
-        log_info(f"Profiling drafter {drafter_p} ({drafter_m})...")
-        profile = build_capacity_profile(drafter_prov, drafter_m)
+    for warning in result.warnings:
+        print(warning, file=sys.stderr)
 
-        unit = TaskUnit(id="draft", goal=task, target_files=[filepath], acceptance="")
-        packed = pack_context(unit, profile, repo_root=".")
-        prompt = build_drafter_prompt(unit, packed.content)
+    if result.status == "error":
+        msg = result.error_message or "Unknown error"
+        if result.suggestion:
+            msg += f" (Suggestion: {result.suggestion})"
+        print(f"Error [{result.error_type}]: {msg}", file=sys.stderr)
+        sys.exit(1)
 
-        log_info(f"Drafting {filepath} with {drafter_p} ({drafter_m})...")
-        with console.status(f"[bold cyan]Drafting with {drafter_m}[/bold cyan]", spinner="dots"):
-            drafted = drafter_prov.generate(prompt=prompt, model=drafter_m)
-
-        lines = drafted.splitlines()
-        if lines and lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].startswith("```"):
-            lines = lines[:-1]
-        cleaned = "\n".join(lines)
-
-        original = read_file_safe(Path(filepath))
-        diff = generate_unified_diff(original, cleaned, filepath)
-
-        console.print("\n[bold]Proposed Patch:[/bold]")
-        console.print(diff if diff else "No changes proposed.")
-
-        if apply or conf.policy.auto_apply:
-            if diff:
-                from hierocode.broker.patcher import PatchParseError, apply_patch, parse_diff
-
-                try:
-                    patches = parse_diff(diff)
-                except PatchParseError as e:
-                    log_error(f"diff parse error: {e}")
-                    return
-                total_applied = total_errors = 0
-                for p in patches:
-                    r = apply_patch(p, ".")
-                    if r.status == "applied":
-                        log_info(f"[green]wrote[/green] {p.path}")
-                        total_applied += 1
-                    else:
-                        log_error(f"{p.path}: {r.message}")
-                        total_errors += 1
-                if total_errors:
-                    log_warning(
-                        f"Apply done — {total_applied} files written, {total_errors} errors."
-                    )
-                else:
-                    log_success(f"Applied {total_applied} file(s).")
-            else:
-                log_info("No diff to apply.")
-
-    except Exception as e:
-        log_error(str(e))
-        raise typer.Exit(code=1)
+    if result.diff:
+        print(result.diff)
+    sys.exit(0)
 
 
 @app.command()
