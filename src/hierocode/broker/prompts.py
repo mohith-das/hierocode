@@ -1,6 +1,6 @@
 """Prompt builders for the hierocode broker: planner, drafter, drafter-revision, and QA."""
 
-from typing import Optional
+from typing import Literal, Optional
 
 from hierocode.broker.plan_schema import CapacityProfile, TaskUnit
 
@@ -104,6 +104,7 @@ Respond with the JSON object only. No markdown, no commentary."""
 def build_drafter_prompt(
     unit: TaskUnit,
     packed_context: str,
+    mode: Literal["whole_file", "edit_blocks"] = "whole_file",
 ) -> str:
     """Return the prompt sent to the drafter for a fresh code generation attempt."""
     primary_target = unit.target_files[0] if unit.target_files else "(no target file specified)"
@@ -111,6 +112,23 @@ def build_drafter_prompt(
     acceptance_section = ""
     if unit.acceptance:
         acceptance_section = f"\n## Acceptance Criteria\n\n{unit.acceptance}\n"
+
+    if mode == "whole_file":
+        instructions = "Return ONLY the new full contents of the primary target file (first entry in target_files). No explanations, no diff markers, no code fences."
+    else:
+        instructions = """Return your changes as SEARCH/REPLACE blocks.
+Format:
+<<<<<<< SEARCH
+<exact lines copied from the current file>
+=======
+<replacement lines>
+>>>>>>> REPLACE
+
+Rules:
+1. Copy SEARCH lines *exactly* from the file shown in Context, including indentation.
+2. Keep each block minimal.
+3. You can use multiple blocks for multiple changes.
+4. Output NOTHING outside the blocks."""
 
     return f"""## Goal
 
@@ -126,8 +144,7 @@ Primary target: {primary_target}
 
 ## Instructions
 
-Return ONLY the new full contents of the primary target file (first entry in target_files).\
- No explanations, no diff markers, no code fences."""
+{instructions}"""
 
 
 def build_drafter_revision_prompt(
@@ -135,6 +152,7 @@ def build_drafter_revision_prompt(
     packed_context: str,
     prior_diff: str,
     feedback: str,
+    mode: Literal["whole_file", "edit_blocks"] = "whole_file",
 ) -> str:
     """Return the prompt for a drafter revision attempt, including the prior diff and feedback."""
     primary_target = unit.target_files[0] if unit.target_files else "(no target file specified)"
@@ -142,6 +160,23 @@ def build_drafter_revision_prompt(
     acceptance_section = ""
     if unit.acceptance:
         acceptance_section = f"\n## Acceptance Criteria\n\n{unit.acceptance}\n"
+
+    if mode == "whole_file":
+        instructions = "Address ALL of the reviewer's feedback. Return the full new file contents. No explanations, no diff markers, no code fences."
+    else:
+        instructions = """Address ALL of the reviewer's feedback. Return your changes as SEARCH/REPLACE blocks.
+Format:
+<<<<<<< SEARCH
+<exact lines copied from the current file>
+=======
+<replacement lines>
+>>>>>>> REPLACE
+
+Rules:
+1. Copy SEARCH lines *exactly* from the file shown in Context, including indentation.
+2. Keep each block minimal.
+3. You can use multiple blocks for multiple changes.
+4. Output NOTHING outside the blocks."""
 
     return f"""## Goal
 
@@ -165,8 +200,7 @@ Primary target: {primary_target}
 
 ## Instructions
 
-Address ALL of the reviewer's feedback. Return the full new file contents.\
- No explanations, no diff markers, no code fences."""
+{instructions}"""
 
 
 def build_qa_prompt(

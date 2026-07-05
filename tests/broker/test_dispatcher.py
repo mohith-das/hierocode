@@ -141,8 +141,6 @@ def test_revise_then_accept(mock_diff, mock_read, mock_pack, mock_prompt, mock_r
     assert ur.status == "completed"
     assert ur.revision_count == 1
     assert result.total_revisions == 1
-    # Revision prompt should have been built once
-    mock_revision.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

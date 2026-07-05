@@ -8,6 +8,7 @@ from hierocode.broker.budget import pack_context
 from hierocode.broker.plan_schema import CapacityProfile, Plan, QAVerdict, TaskUnit
 from hierocode.broker.progress import NULL_REPORTER, UnitPhase
 from hierocode.broker.progress import ProgressReporter  # noqa: F401 — re-exported for callers
+from hierocode.broker.edits import apply_edit_blocks, parse_edit_blocks, EditApplyError
 from hierocode.broker.prompts import build_drafter_prompt, build_drafter_revision_prompt
 from hierocode.broker.qa import review_draft
 from hierocode.broker.usage import UsageAccumulator, UsageInfo
@@ -89,6 +90,7 @@ def _draft_and_diff(
     profile: CapacityProfile,
     repo_root: Path | str,
     file_state: dict[str, str],
+    original: str = "",
 ) -> tuple[str | None, str | None]:
     """Call the drafter and produce a unified diff and the new content (or None if no target)."""
     drafted = drafter_provider.generate(
@@ -99,9 +101,15 @@ def _draft_and_diff(
     cleaned = _strip_code_fences(drafted)
     if unit.target_files:
         target = _normalize_target(unit.target_files[0], repo_root)
-        original = _current_content(target, repo_root, file_state)
-        diff = generate_unified_diff(original, cleaned, target)
-        return diff, cleaned
+        
+        blocks = parse_edit_blocks(cleaned)
+        if blocks:
+            new_content = apply_edit_blocks(original, blocks)
+        else:
+            new_content = cleaned
+            
+        diff = generate_unified_diff(original, new_content, target)
+        return diff, new_content
     return cleaned, None
 
 
@@ -113,9 +121,11 @@ def _escalate(
     profile: CapacityProfile,
     repo_root: Path | str,
     file_state: dict[str, str],
+    original: str = "",
 ) -> tuple[str | None, str | None]:
     """Escalate a unit: let the planner draft directly with extra token headroom."""
-    prompt = build_drafter_prompt(unit, packed.content)
+    mode: Literal["whole_file", "edit_blocks"] = "whole_file" if original == "" else "edit_blocks"
+    prompt = build_drafter_prompt(unit, packed.content, mode=mode)
     drafted = planner_provider.generate(
         prompt=prompt,
         model=planner_model,
@@ -124,9 +134,15 @@ def _escalate(
     cleaned = _strip_code_fences(drafted)
     if unit.target_files:
         target = _normalize_target(unit.target_files[0], repo_root)
-        original = _current_content(target, repo_root, file_state)
-        diff = generate_unified_diff(original, cleaned, target)
-        return diff, cleaned
+        
+        blocks = parse_edit_blocks(cleaned)
+        if blocks:
+            new_content = apply_edit_blocks(original, blocks)
+        else:
+            new_content = cleaned
+            
+        diff = generate_unified_diff(original, new_content, target)
+        return diff, new_content
     return cleaned, None
 
 
@@ -205,26 +221,46 @@ def run_plan(
             )
             continue
             
-        prompt = build_drafter_prompt(unit, packed.content)
-        diff, new_content = _draft_and_diff(unit, prompt, drafter_provider, drafter_model, profile, repo_root, file_state)
+        original = ""
+        if unit.target_files:
+            target = _normalize_target(unit.target_files[0], repo_root)
+            original = _current_content(target, repo_root, file_state)
+
+        mode: Literal["whole_file", "edit_blocks"] = "whole_file" if original == "" else "edit_blocks"
+        prompt = build_drafter_prompt(unit, packed.content, mode=mode)
+        
+        pre_review_verdict = None
+        try:
+            diff, new_content = _draft_and_diff(unit, prompt, drafter_provider, drafter_model, profile, repo_root, file_state, original)
+        except EditApplyError as exc:
+            diff, new_content = None, None
+            pre_review_verdict = QAVerdict(
+                action="revise",
+                feedback=f"Your edit blocks could not be applied: {exc}. Re-emit the blocks with SEARCH text copied exactly from the file."
+            )
+
         if usage_accumulator is not None and isinstance(drafter_provider.last_usage, UsageInfo):
             usage_accumulator.record("drafter", drafter_provider.last_usage)
 
         revisions = 0
 
         while True:
-            reporter.phase(unit.id, UnitPhase.REVIEWING)
-            verdict = review_draft(
-                planner_provider,
-                planner_model,
-                unit,
-                diff,
-                original_task=plan.task,
-                exploration=reviewer_exploration,
-                allowed_tools=reviewer_allowed_tools,
-            )
-            if usage_accumulator is not None and isinstance(planner_provider.last_usage, UsageInfo):
-                usage_accumulator.record("reviewer", planner_provider.last_usage)
+            if pre_review_verdict:
+                verdict = pre_review_verdict
+                pre_review_verdict = None
+            else:
+                reporter.phase(unit.id, UnitPhase.REVIEWING)
+                verdict = review_draft(
+                    planner_provider,
+                    planner_model,
+                    unit,
+                    diff,
+                    original_task=plan.task,
+                    exploration=reviewer_exploration,
+                    allowed_tools=reviewer_allowed_tools,
+                )
+                if usage_accumulator is not None and isinstance(planner_provider.last_usage, UsageInfo):
+                    usage_accumulator.record("reviewer", planner_provider.last_usage)
 
             if verdict.action == "accept":
                 reporter.phase(unit.id, UnitPhase.COMPLETED)
@@ -265,7 +301,7 @@ def run_plan(
                         total_escalations += 1
                         reporter.phase(unit.id, UnitPhase.ESCALATING)
                         diff, new_content = _escalate(
-                            unit, packed, planner_provider, planner_model, profile, repo_root, file_state
+                            unit, packed, planner_provider, planner_model, profile, repo_root, file_state, original
                         )
                         if usage_accumulator is not None and isinstance(planner_provider.last_usage, UsageInfo):
                             usage_accumulator.record("planner", planner_provider.last_usage)
@@ -329,12 +365,19 @@ def run_plan(
                 reporter.revision(unit.id)
                 reporter.phase(unit.id, UnitPhase.REVISING)
                 prompt = build_drafter_revision_prompt(
-                    unit, packed.content, diff, verdict.feedback or ""
+                    unit, packed.content, diff or "", verdict.feedback or "", mode=mode
                 )
                 reporter.phase(unit.id, UnitPhase.DRAFTING)
-                diff, new_content = _draft_and_diff(
-                    unit, prompt, drafter_provider, drafter_model, profile, repo_root, file_state
-                )
+                try:
+                    diff, new_content = _draft_and_diff(
+                        unit, prompt, drafter_provider, drafter_model, profile, repo_root, file_state, original
+                    )
+                except EditApplyError as exc:
+                    diff, new_content = None, None
+                    pre_review_verdict = QAVerdict(
+                        action="revise",
+                        feedback=f"Your edit blocks could not be applied: {exc}. Re-emit the blocks with SEARCH text copied exactly from the file."
+                    )
                 if usage_accumulator is not None and isinstance(drafter_provider.last_usage, UsageInfo):
                     usage_accumulator.record("drafter", drafter_provider.last_usage)
                 continue
@@ -375,7 +418,7 @@ def run_plan(
                     total_escalations += 1
                     reporter.phase(unit.id, UnitPhase.ESCALATING)
                     diff, new_content = _escalate(
-                        unit, packed, planner_provider, planner_model, profile, repo_root, file_state
+                        unit, packed, planner_provider, planner_model, profile, repo_root, file_state, original
                     )
                     if usage_accumulator is not None and isinstance(planner_provider.last_usage, UsageInfo):
                         usage_accumulator.record("planner", planner_provider.last_usage)

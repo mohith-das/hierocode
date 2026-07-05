@@ -60,7 +60,7 @@ def test_includes_target_file_within_budget(tmp_path):
 def test_respects_max_files_per_unit(tmp_path):
     for name in ("a.py", "b.py", "c.py"):
         (tmp_path / name).write_text("x = 1\n")
-    unit = _unit(target_files=["a.py", "b.py", "c.py"])
+    unit = _unit(target_files=["a.py"], context_files=["b.py", "c.py"])
     result = pack_context(unit, _profile(max_files_per_unit=1), tmp_path)
     assert result.included_files == ["a.py"]
     assert "b.py" in result.skipped_files
