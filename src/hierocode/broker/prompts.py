@@ -18,6 +18,7 @@ def build_planner_system_prompt() -> str:
         " max_files_per_unit) will be supplied in the user prompt. You MUST respect these"
         " limits when sizing each unit — never assign more files than max_files_per_unit, and"
         " keep est_input_tokens within max_input_tokens.\n\n"
+        "Each unit MUST have exactly one entry in `target_files`. Never plan a unit that edits two files.\n\n"
         "OUTPUT CONTRACT: respond with a single valid JSON object that matches the Plan schema."
         " No prose before or after it. No markdown code fences. No comments. JSON only.\n\n"
         "The JSON must follow this exact structure:\n"
@@ -69,6 +70,8 @@ Design each TaskUnit so that:
 - `est_input_tokens` ≤ {profile.max_input_tokens}
 - `len(target_files) + len(context_files)` ≤ {profile.max_files_per_unit}
 - The goal is achievable by a {param_str} local model with no external context.
+
+Each unit MUST have exactly one entry in `target_files`. Never plan a unit that edits two files.
 
 **File path convention (IMPORTANT):** every entry in `target_files` and
 `context_files` MUST be relative to the repo root. Do **not** include the

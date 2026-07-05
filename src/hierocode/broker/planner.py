@@ -18,8 +18,11 @@ def generate_plan(
     allowed_tools: Optional[list[str]] = None,
 ) -> Plan:
     """Ask the planner provider to produce a validated JSON Plan."""
+    from hierocode.broker.plan_schema import PlanParseError
+    
     system = build_planner_system_prompt()
     user = build_planner_user_prompt(task=task, skeleton=skeleton, profile=profile)
+    
     raw = provider.generate(
         prompt=user,
         model=model,
@@ -29,4 +32,19 @@ def generate_plan(
         exploration=exploration,
         allowed_tools=allowed_tools,
     )
-    return parse_plan_from_llm_output(raw)
+    
+    try:
+        return parse_plan_from_llm_output(raw)
+    except PlanParseError as e:
+        # Retry exactly once
+        retry_prompt = user + f"\n\n## Previous attempt failed\n\nYour previous response could not be parsed:\n{e}\n\nRespond again with ONLY the valid JSON object. No prose, no code fences."
+        raw_retry = provider.generate(
+            prompt=retry_prompt,
+            model=model,
+            system=system,
+            json_mode=True,
+            max_tokens=max_tokens,
+            exploration=exploration,
+            allowed_tools=allowed_tools,
+        )
+        return parse_plan_from_llm_output(raw_retry)

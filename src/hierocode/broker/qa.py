@@ -43,6 +43,21 @@ def review_draft(
     try:
         return parse_qa_verdict_from_llm_output(raw)
     except PlanParseError as exc:
-        raise PlanParseError(
-            f"QA response unparseable: {exc}\n---\nRaw response: {raw[:1000]}"
-        ) from exc
+        # Retry exactly once. Note: If a usage accumulator is involved, it will only reflect
+        # the usage from this second call.
+        retry_prompt = qa_prompt + f"\n\n## Previous attempt failed\n\nYour previous response could not be parsed:\n{exc}\n\nRespond again with ONLY the valid JSON object. No prose, no code fences."
+        raw_retry: str = planner_provider.generate(
+            prompt=retry_prompt,
+            model=planner_model,
+            json_mode=True,
+            max_tokens=max_tokens,
+            system=_QA_SYSTEM,
+            exploration=exploration,
+            allowed_tools=allowed_tools,
+        )
+        try:
+            return parse_qa_verdict_from_llm_output(raw_retry)
+        except PlanParseError as exc_retry:
+            raise PlanParseError(
+                f"QA response unparseable after retry: {exc_retry}\n---\nRaw response: {raw_retry[:1000]}"
+            ) from exc_retry

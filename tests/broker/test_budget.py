@@ -67,14 +67,14 @@ def test_respects_max_files_per_unit(tmp_path):
     assert "c.py" in result.skipped_files
 
 
-def test_target_file_truncated_when_oversized(tmp_path):
+def test_target_file_infeasible_when_oversized(tmp_path):
     big_content = "x = 1\n" * 5000  # ~30 000 chars → ~7 500 tokens > 300 - 800 budget
     (tmp_path / "big.py").write_text(big_content)
     unit = _unit(target_files=["big.py"])
     profile = _profile(max_input_tokens=300)
     result = pack_context(unit, profile, tmp_path)
-    assert "big.py" in result.truncated_files
-    assert "... [truncated," in result.content
+    assert "big.py" in result.infeasible_targets
+    assert "big.py" in result.skipped_files
 
 
 def test_context_file_skipped_when_oversized(tmp_path):

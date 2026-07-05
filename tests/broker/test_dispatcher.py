@@ -75,6 +75,7 @@ _UNIFIED_DIFF_PATH = "hierocode.broker.dispatcher.generate_unified_diff"
 def _make_packed(content: str = "packed_content") -> MagicMock:
     packed = MagicMock()
     packed.content = content
+    packed.infeasible_targets = []
     return packed
 
 
@@ -155,10 +156,9 @@ def test_revise_then_accept(mock_diff, mock_read, mock_pack, mock_prompt, mock_r
 @patch(_READ_FILE_PATH, return_value="")
 @patch(_UNIFIED_DIFF_PATH, return_value="--- diff ---")
 def test_revise_caps_then_escalates(mock_diff, mock_read, mock_pack, mock_prompt, mock_revision, mock_review):
-    """Always revise; after cap, dispatcher escalates using planner; status='escalated'."""
+    """Always revise; after cap, dispatcher escalates using planner; QA accepts; status='escalated'."""
     mock_pack.return_value = _make_packed()
-    # Always return revise — even after escalation attempt the verdict is cached
-    mock_review.return_value = _revise_verdict()
+    mock_review.side_effect = [_revise_verdict(), _revise_verdict(), _accept_verdict()]
 
     planner, drafter = _mock_providers()
     planner.generate.return_value = "escalated output"
@@ -189,9 +189,9 @@ def test_revise_caps_then_escalates(mock_diff, mock_read, mock_pack, mock_prompt
 @patch(_READ_FILE_PATH, return_value="")
 @patch(_UNIFIED_DIFF_PATH, return_value="--- diff ---")
 def test_escalate_direct(mock_diff, mock_read, mock_pack, mock_prompt, mock_review):
-    """QA immediately returns escalate; planner drafts; status='escalated'."""
+    """QA immediately returns escalate; planner drafts; QA accepts; status='escalated'."""
     mock_pack.return_value = _make_packed()
-    mock_review.return_value = _escalate_verdict()
+    mock_review.side_effect = [_escalate_verdict(), _accept_verdict()]
 
     planner, drafter = _mock_providers()
     planner.generate.return_value = "planner drafted"
@@ -221,7 +221,12 @@ def test_escalate_direct(mock_diff, mock_read, mock_pack, mock_prompt, mock_revi
 def test_escalation_cap_enforced(mock_diff, mock_read, mock_pack, mock_prompt, mock_review):
     """4 units all requesting escalate; cap=3; 4th unit becomes 'failed'."""
     mock_pack.return_value = _make_packed()
-    mock_review.return_value = _escalate_verdict()
+    mock_review.side_effect = [
+        _escalate_verdict(), _accept_verdict(),
+        _escalate_verdict(), _accept_verdict(),
+        _escalate_verdict(), _accept_verdict(),
+        _escalate_verdict(), _accept_verdict(),
+    ]
 
     planner, drafter = _mock_providers()
     planner.generate.return_value = "escalated output"
@@ -409,8 +414,8 @@ def test_escalation_confirm_approves_proceeds(
 ):
     """When escalation_confirm returns True, _escalate is called and unit is 'escalated'."""
     mock_pack.return_value = _make_packed()
-    mock_review.return_value = _escalate_verdict()
-    mock_escalate.return_value = "--- escalated diff ---"
+    mock_review.side_effect = [_escalate_verdict(), _accept_verdict()]
+    mock_escalate.return_value = ("--- escalated diff ---", "cleaned")
 
     planner, drafter = _mock_providers()
     confirm = MagicMock(return_value=True)

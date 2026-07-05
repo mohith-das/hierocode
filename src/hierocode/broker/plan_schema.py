@@ -62,9 +62,12 @@ class TaskUnit(BaseModel):
 
     @model_validator(mode="after")
     def requires_at_least_one_file(self) -> "TaskUnit":
-        """target_files + context_files combined must not be empty."""
+        """target_files + context_files combined must not be empty.
+        TaskUnit supports at most one target file."""
         if not self.target_files and not self.context_files:
             raise ValueError("TaskUnit must have at least one target_file or context_file")
+        if len(self.target_files) > 1:
+            raise ValueError("TaskUnit supports at most one target file; split multi-file work into separate units")
         return self
 
 
@@ -100,7 +103,8 @@ class QAVerdict(BaseModel):
         """Enforce per-action field requirements. Treats empty collections as
         equivalent to None — many LLMs emit `"feedback": ""` or `"sub_units": []`
         for accept/escalate instead of omitting the key, which is a valid
-        semantic match for "no feedback / no sub_units"."""
+        semantic match for "no feedback / no sub_units". For accept and escalate,
+        silently discards any provided feedback or sub_units."""
         if self.action == "revise":
             if not self.feedback:
                 raise ValueError("QAVerdict with action='revise' requires non-empty feedback")
@@ -108,14 +112,8 @@ class QAVerdict(BaseModel):
             if not self.sub_units:
                 raise ValueError("QAVerdict with action='split' requires non-empty sub_units")
         elif self.action in ("accept", "escalate"):
-            if self.feedback:
-                raise ValueError(
-                    f"QAVerdict with action='{self.action}' must not have feedback"
-                )
-            if self.sub_units:
-                raise ValueError(
-                    f"QAVerdict with action='{self.action}' must not have sub_units"
-                )
+            self.feedback = None
+            self.sub_units = None
         return self
 
 

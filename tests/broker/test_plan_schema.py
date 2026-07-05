@@ -67,6 +67,10 @@ class TestTaskUnit:
         unit = TaskUnit(id="u1", goal="edit stuff", target_files=["main.py"])
         assert unit.target_files == ["main.py"]
 
+    def test_task_unit_rejects_multiple_target_files(self):
+        with pytest.raises(ValueError, match="at most one target file"):
+            TaskUnit(id="u1", goal="edit stuff", target_files=["main.py", "other.py"])
+
     def test_est_input_tokens_non_negative(self):
         with pytest.raises(ValueError, match="est_input_tokens"):
             TaskUnit(id="u1", goal="do thing", target_files=["f.py"], est_input_tokens=-1)
@@ -134,18 +138,18 @@ class TestQAVerdict:
         assert len(v.sub_units) == 1  # type: ignore[arg-type]
 
     def test_qa_accept_forbids_feedback_or_sub_units(self):
-        with pytest.raises(ValueError, match="feedback"):
-            QAVerdict(action="accept", feedback="nice")
-        with pytest.raises(ValueError, match="sub_units"):
-            u = TaskUnit(id="s1", goal="sub", target_files=["x.py"])
-            QAVerdict(action="accept", sub_units=[u])
+        # Now accept silently discards feedback and sub_units
+        u = TaskUnit(id="s1", goal="sub", target_files=["x.py"])
+        v = QAVerdict(action="accept", feedback="nice", sub_units=[u])
+        assert v.feedback is None
+        assert v.sub_units is None
 
     def test_qa_escalate_forbids_feedback_or_sub_units(self):
-        with pytest.raises(ValueError, match="feedback"):
-            QAVerdict(action="escalate", feedback="too hard")
-        with pytest.raises(ValueError, match="sub_units"):
-            u = TaskUnit(id="s1", goal="sub", target_files=["x.py"])
-            QAVerdict(action="escalate", sub_units=[u])
+        # Now escalate silently discards feedback and sub_units
+        u = TaskUnit(id="s1", goal="sub", target_files=["x.py"])
+        v = QAVerdict(action="escalate", feedback="too hard", sub_units=[u])
+        assert v.feedback is None
+        assert v.sub_units is None
 
     def test_qa_accept_valid(self):
         v = QAVerdict(action="accept")
@@ -158,24 +162,25 @@ class TestQAVerdict:
         accept/escalate. Empty list is semantically equivalent to None here."""
         v = QAVerdict(action="accept", sub_units=[])
         assert v.action == "accept"
-        assert v.sub_units == []
+        assert v.sub_units is None
 
     def test_qa_accept_allows_empty_feedback_string(self):
         """Regression: LLMs often emit `feedback: ""` rather than null for
         accept/escalate. Empty string is semantically equivalent to None here."""
         v = QAVerdict(action="accept", feedback="")
         assert v.action == "accept"
-        assert v.feedback == ""
+        assert v.feedback is None
 
     def test_qa_escalate_allows_empty_sub_units_list(self):
         v = QAVerdict(action="escalate", sub_units=[])
         assert v.action == "escalate"
+        assert v.sub_units is None
 
     def test_qa_accept_still_rejects_populated_sub_units(self):
-        """Truthiness check only — a non-empty sub_units list still errors."""
+        """Now it silently discards them, so it does not raise."""
         u = TaskUnit(id="s1", goal="sub", target_files=["x.py"])
-        with pytest.raises(ValueError, match="sub_units"):
-            QAVerdict(action="accept", sub_units=[u])
+        v = QAVerdict(action="accept", sub_units=[u])
+        assert v.sub_units is None
 
     def test_qa_escalate_with_reason(self):
         v = QAVerdict(action="escalate", reason="Too complex for drafter")

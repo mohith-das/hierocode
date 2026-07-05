@@ -74,6 +74,13 @@ def _normalize_target(target: str, repo_root: Path | str) -> str:
     return target
 
 
+def _current_content(path: str, repo_root: Path | str, file_state: dict[str, str]) -> str:
+    """Return the unit-visible content of a file: overlay first, then disk."""
+    if path in file_state:
+        return file_state[path]
+    return read_file_safe(Path(repo_root) / path)
+
+
 def _draft_and_diff(
     unit: TaskUnit,
     prompt: str,
@@ -81,8 +88,9 @@ def _draft_and_diff(
     drafter_model: str,
     profile: CapacityProfile,
     repo_root: Path | str,
-) -> str:
-    """Call the drafter and produce a unified diff (or raw output if no target files)."""
+    file_state: dict[str, str],
+) -> tuple[str | None, str | None]:
+    """Call the drafter and produce a unified diff and the new content (or None if no target)."""
     drafted = drafter_provider.generate(
         prompt=prompt,
         model=drafter_model,
@@ -91,9 +99,10 @@ def _draft_and_diff(
     cleaned = _strip_code_fences(drafted)
     if unit.target_files:
         target = _normalize_target(unit.target_files[0], repo_root)
-        original = read_file_safe(Path(repo_root) / target)
-        return generate_unified_diff(original, cleaned, target)
-    return cleaned
+        original = _current_content(target, repo_root, file_state)
+        diff = generate_unified_diff(original, cleaned, target)
+        return diff, cleaned
+    return cleaned, None
 
 
 def _escalate(
@@ -103,7 +112,8 @@ def _escalate(
     planner_model: str,
     profile: CapacityProfile,
     repo_root: Path | str,
-) -> str:
+    file_state: dict[str, str],
+) -> tuple[str | None, str | None]:
     """Escalate a unit: let the planner draft directly with extra token headroom."""
     prompt = build_drafter_prompt(unit, packed.content)
     drafted = planner_provider.generate(
@@ -114,9 +124,10 @@ def _escalate(
     cleaned = _strip_code_fences(drafted)
     if unit.target_files:
         target = _normalize_target(unit.target_files[0], repo_root)
-        original = read_file_safe(Path(repo_root) / target)
-        return generate_unified_diff(original, cleaned, target)
-    return cleaned
+        original = _current_content(target, repo_root, file_state)
+        diff = generate_unified_diff(original, cleaned, target)
+        return diff, cleaned
+    return cleaned, None
 
 
 # ---------------------------------------------------------------------------
@@ -138,6 +149,7 @@ def run_plan(
     escalation_confirm: Optional[Callable[[TaskUnit, str, int], bool]] = None,
     reviewer_exploration: Literal["passive", "active"] = "passive",
     reviewer_allowed_tools: Optional[list[str]] = None,
+    max_total_units: Optional[int] = None,
 ) -> DispatchResult:
     """Run all TaskUnits in a Plan through the draft → QA → verdict loop.
 
@@ -153,18 +165,48 @@ def run_plan(
     result = DispatchResult(task=plan.task)
     total_escalations = 0
     total_revisions = 0
+    
+    if max_total_units is None:
+        max_total_units = max(12, 3 * len(plan.units))
 
     unit_queue: list[TaskUnit] = list(plan.units)
+    file_state: dict[str, str] = {}
+    units_processed = 0
 
     reporter.seed(plan.task, [(u.id, u.goal) for u in plan.units])
 
-    while unit_queue and total_escalations <= max_escalations_per_task:
+    while unit_queue:
+        if units_processed >= max_total_units:
+            for remaining_unit in unit_queue:
+                reporter.phase(remaining_unit.id, UnitPhase.FAILED)
+                result.units.append(
+                    UnitResult(
+                        unit_id=remaining_unit.id,
+                        status="failed",
+                        reason="unit budget exhausted (possible split loop)"
+                    )
+                )
+            break
+            
         unit = unit_queue.pop(0)
+        units_processed += 1
 
         reporter.phase(unit.id, UnitPhase.DRAFTING)
-        packed = pack_context(unit, profile, repo_root)
+        packed = pack_context(unit, profile, repo_root, file_state=file_state)
+        
+        if packed.infeasible_targets:
+            reporter.phase(unit.id, UnitPhase.FAILED)
+            result.units.append(
+                UnitResult(
+                    unit_id=unit.id,
+                    status="failed",
+                    reason=f"target file(s) {packed.infeasible_targets} exceed the drafter's input budget; split the unit or use a larger drafter"
+                )
+            )
+            continue
+            
         prompt = build_drafter_prompt(unit, packed.content)
-        diff = _draft_and_diff(unit, prompt, drafter_provider, drafter_model, profile, repo_root)
+        diff, new_content = _draft_and_diff(unit, prompt, drafter_provider, drafter_model, profile, repo_root, file_state)
         if usage_accumulator is not None and isinstance(drafter_provider.last_usage, UsageInfo):
             usage_accumulator.record("drafter", drafter_provider.last_usage)
 
@@ -186,6 +228,8 @@ def run_plan(
 
             if verdict.action == "accept":
                 reporter.phase(unit.id, UnitPhase.COMPLETED)
+                if unit.target_files and new_content is not None:
+                    file_state[_normalize_target(unit.target_files[0], repo_root)] = new_content
                 result.units.append(
                     UnitResult(
                         unit_id=unit.id,
@@ -220,22 +264,53 @@ def run_plan(
                                 break
                         total_escalations += 1
                         reporter.phase(unit.id, UnitPhase.ESCALATING)
-                        diff = _escalate(
-                            unit, packed, planner_provider, planner_model, profile, repo_root
+                        diff, new_content = _escalate(
+                            unit, packed, planner_provider, planner_model, profile, repo_root, file_state
                         )
                         if usage_accumulator is not None and isinstance(planner_provider.last_usage, UsageInfo):
                             usage_accumulator.record("planner", planner_provider.last_usage)
-                        reporter.phase(unit.id, UnitPhase.ESCALATED)
-                        result.units.append(
-                            UnitResult(
-                                unit_id=unit.id,
-                                status="escalated",
-                                diff=diff,
-                                verdict=verdict,
-                                revision_count=revisions,
-                                escalated=True,
-                            )
+                        
+                        # QA the escalated draft once
+                        reporter.phase(unit.id, UnitPhase.REVIEWING)
+                        esc_verdict = review_draft(
+                            planner_provider,
+                            planner_model,
+                            unit,
+                            diff or "",
+                            original_task=plan.task,
+                            exploration=reviewer_exploration,
+                            allowed_tools=reviewer_allowed_tools,
                         )
+                        if usage_accumulator is not None and isinstance(planner_provider.last_usage, UsageInfo):
+                            usage_accumulator.record("reviewer", planner_provider.last_usage)
+
+                        if esc_verdict.action == "accept":
+                            reporter.phase(unit.id, UnitPhase.ESCALATED)
+                            if unit.target_files and new_content is not None:
+                                file_state[_normalize_target(unit.target_files[0], repo_root)] = new_content
+                            result.units.append(
+                                UnitResult(
+                                    unit_id=unit.id,
+                                    status="escalated",
+                                    diff=diff,
+                                    verdict=esc_verdict,
+                                    revision_count=revisions,
+                                    escalated=True,
+                                )
+                            )
+                        else:
+                            reporter.phase(unit.id, UnitPhase.FAILED)
+                            result.units.append(
+                                UnitResult(
+                                    unit_id=unit.id,
+                                    status="failed",
+                                    diff=diff,
+                                    verdict=esc_verdict,
+                                    revision_count=revisions,
+                                    escalated=True,
+                                    reason=f"escalated draft rejected by reviewer: {esc_verdict.action}",
+                                )
+                            )
                     else:
                         reporter.phase(unit.id, UnitPhase.FAILED)
                         result.units.append(
@@ -257,8 +332,8 @@ def run_plan(
                     unit, packed.content, diff, verdict.feedback or ""
                 )
                 reporter.phase(unit.id, UnitPhase.DRAFTING)
-                diff = _draft_and_diff(
-                    unit, prompt, drafter_provider, drafter_model, profile, repo_root
+                diff, new_content = _draft_and_diff(
+                    unit, prompt, drafter_provider, drafter_model, profile, repo_root, file_state
                 )
                 if usage_accumulator is not None and isinstance(drafter_provider.last_usage, UsageInfo):
                     usage_accumulator.record("drafter", drafter_provider.last_usage)
@@ -299,22 +374,53 @@ def run_plan(
                             break
                     total_escalations += 1
                     reporter.phase(unit.id, UnitPhase.ESCALATING)
-                    diff = _escalate(
-                        unit, packed, planner_provider, planner_model, profile, repo_root
+                    diff, new_content = _escalate(
+                        unit, packed, planner_provider, planner_model, profile, repo_root, file_state
                     )
                     if usage_accumulator is not None and isinstance(planner_provider.last_usage, UsageInfo):
                         usage_accumulator.record("planner", planner_provider.last_usage)
-                    reporter.phase(unit.id, UnitPhase.ESCALATED)
-                    result.units.append(
-                        UnitResult(
-                            unit_id=unit.id,
-                            status="escalated",
-                            diff=diff,
-                            verdict=verdict,
-                            revision_count=revisions,
-                            escalated=True,
-                        )
+                    
+                    # QA the escalated draft once
+                    reporter.phase(unit.id, UnitPhase.REVIEWING)
+                    esc_verdict = review_draft(
+                        planner_provider,
+                        planner_model,
+                        unit,
+                        diff or "",
+                        original_task=plan.task,
+                        exploration=reviewer_exploration,
+                        allowed_tools=reviewer_allowed_tools,
                     )
+                    if usage_accumulator is not None and isinstance(planner_provider.last_usage, UsageInfo):
+                        usage_accumulator.record("reviewer", planner_provider.last_usage)
+
+                    if esc_verdict.action == "accept":
+                        reporter.phase(unit.id, UnitPhase.ESCALATED)
+                        if unit.target_files and new_content is not None:
+                            file_state[_normalize_target(unit.target_files[0], repo_root)] = new_content
+                        result.units.append(
+                            UnitResult(
+                                unit_id=unit.id,
+                                status="escalated",
+                                diff=diff,
+                                verdict=esc_verdict,
+                                revision_count=revisions,
+                                escalated=True,
+                            )
+                        )
+                    else:
+                        reporter.phase(unit.id, UnitPhase.FAILED)
+                        result.units.append(
+                            UnitResult(
+                                unit_id=unit.id,
+                                status="failed",
+                                diff=diff,
+                                verdict=esc_verdict,
+                                revision_count=revisions,
+                                escalated=True,
+                                reason=f"escalated draft rejected by reviewer: {esc_verdict.action}",
+                            )
+                        )
                 else:
                     reporter.phase(unit.id, UnitPhase.FAILED)
                     result.units.append(

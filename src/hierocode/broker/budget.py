@@ -17,6 +17,7 @@ class PackedContext(BaseModel):
     included_files: list[str]
     truncated_files: list[str]
     skipped_files: list[str]
+    infeasible_targets: list[str] = []
     estimated_tokens: int
 
 
@@ -30,13 +31,22 @@ def _format_block(path: str, content: str) -> str:
     return f"--- {path} ---\n{content}\n--- end {path} ---\n"
 
 
+def _current_content(path: str, repo_root: Path | str, file_state: dict[str, str]) -> str:
+    """Return the unit-visible content of a file: overlay first, then disk."""
+    if path in file_state:
+        return file_state[path]
+    return read_file_safe(Path(repo_root) / path)
+
+
 def pack_context(
     unit: TaskUnit,
     profile: CapacityProfile,
     repo_root: Path | str,
+    file_state: dict[str, str] | None = None,
 ) -> PackedContext:
     """Pack target and context files into the drafter's available token budget."""
     repo_root = Path(repo_root)
+    file_state = file_state or {}
 
     available = profile.max_input_tokens - _PROMPT_OVERHEAD
     if available <= 0:
@@ -50,16 +60,19 @@ def pack_context(
     included: list[str] = []
     truncated: list[str] = []
     skipped: list[str] = []
+    infeasible: list[str] = []
     blocks: list[str] = []
 
     def _process(path: str, *, is_target: bool) -> None:
         nonlocal available, slots
 
         if slots <= 0:
+            if is_target:
+                infeasible.append(path)
             skipped.append(path)
             return
 
-        raw = read_file_safe(repo_root / path)
+        raw = _current_content(path, repo_root, file_state)
         content = raw if raw != "" else "[file not found]"
         block = _format_block(path, content)
         tokens = estimate_tokens(block)
@@ -76,23 +89,9 @@ def pack_context(
             skipped.append(path)
             return
 
-        # Target file: truncate to fit.
-        char_budget = available * 4
-        if char_budget <= 0:
-            skipped.append(path)
-            return
-
-        overhead_block = _format_block(path, "")
-        overhead_chars = len(overhead_block)
-        content_chars = max(0, char_budget - overhead_chars)
-        truncated_content = content[:content_chars]
-        leftover = len(content) - content_chars
-        suffix = f"\n... [truncated, {leftover} more chars] ...\n"
-        block = _format_block(path, truncated_content + suffix)
-        blocks.append(block)
-        truncated.append(path)
-        available -= estimate_tokens(block)
-        slots -= 1
+        # Target file: fail immediately.
+        infeasible.append(path)
+        skipped.append(path)
 
     for path in target_files:
         _process(path, is_target=True)
@@ -106,5 +105,6 @@ def pack_context(
         included_files=included,
         truncated_files=truncated,
         skipped_files=skipped,
+        infeasible_targets=infeasible,
         estimated_tokens=estimate_tokens(packed_content),
     )

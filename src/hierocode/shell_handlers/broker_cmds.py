@@ -219,7 +219,12 @@ def handle_run(ctx: HandlerContext) -> HandlerResult:
             ctx.console.print(u.diff)
 
     # Collect all diffs
-    all_diffs = [u.diff for u in result.units if u.diff]
+    all_diffs = [u.diff for u in result.units if u.diff and u.status in ("completed", "escalated")]
+    rejected_count = len([u.diff for u in result.units if u.diff]) - len(all_diffs)
+    if rejected_count > 0:
+        ctx.console.print(
+            f"\n[dim]({rejected_count} rejected diffs excluded from /apply — see unit output above)[/dim]"
+        )
     ctx.session.last_plan = planned
     ctx.session.last_diff = "\n".join(all_diffs) if all_diffs else None
     ctx.session.task_history.append(task)
