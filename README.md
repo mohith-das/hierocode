@@ -3,7 +3,10 @@
 **Hierarchical coding with cost-aware model delegation.**
 
 Frontier models plan and review; local models write the code. Cost per task is
-$0 incremental on a bring-your-own-subscription setup.
+$0 incremental on a bring-your-own-subscription setup. New in v0.4: an
+[MCP server](#use-hierocode-from-claude-code--codex--opencode-mcp) that lets
+Claude Code, Codex CLI, opencode, or any MCP-capable agent delegate drafting
+to your local model.
 
 **You bring:** (1) Python ≥3.10, (2) a local Ollama server with at least one
 model pulled, and (3) one of — a Claude Pro / ChatGPT Plus subscription, an
