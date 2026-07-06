@@ -171,6 +171,54 @@ hierocode draft --goal "add a docstring to the main function" --target src/app.p
 
 This will run the draft process exactly like the MCP server and output a full `DraftResult` JSON object containing the unified diff.
 
+## Recommendation: how to use hierocode effectively
+
+Hierocode's local drafter is a small model (typically 1B–14B parameters). It is not
+a substitute for a frontier model's judgment — used well, it's a way to offload
+mechanical work for $0; used carelessly, it produces confidently wrong diffs. A
+few practices make the difference:
+
+**Match the task to the tool.** The right delegated task is bounded, single-file,
+and mechanical — boilerplate, a stub fill-in, a rename, a test that follows an
+obvious pattern. If a change needs cross-file reasoning or an architectural
+decision, do it in your host agent (Claude Code, opencode, etc.) directly rather
+than delegating it. This is exactly the "WHEN TO USE / WHEN NOT TO USE" guidance
+in the `draft_code` MCP tool's own docstring — read it once before delegating.
+
+**Pick a drafter model sized to your reliability needs.** `build_capacity_profile`
+buckets your drafter into a tier by parameter count (`micro` < 2B, `narrow` < 5B,
+`standard` < 10B, `capable` < 20B, `strong` ≥ 20B), and the tier caps how many
+files and how much output it's trusted with per unit. A 3B model sits in
+`narrow` — capable of small edits, but prone to dropping surrounding code on
+anything underspecified. If your hardware allows it, a 7B–14B coding model
+(e.g. `qwen2.5-coder:14b`, `deepseek-coder-v2:16b`) is meaningfully more
+reliable for edit-block generation:
+```bash
+hierocode models set drafter qwen2.5-coder:14b
+```
+
+**Write goals like acceptance tests, not tickets.** "Add a docstring" leaves room
+for a small model to improvise badly. "Add the docstring `\"\"\"Entry point.\"\"\"`
+as the first line of `main()`'s body; do not otherwise modify the function"
+gives it nothing to interpret. The smaller the drafter, the less ambiguity it
+can absorb — spend the extra sentence.
+
+**Choose MCP vs. the standalone TUI deliberately.**
+- Use **MCP** when you're already working in a host agent and want to offload one
+  mechanical piece to your local model instead of spending the host's tokens on
+  boilerplate — you stay the reviewer for that one diff.
+- Use the standalone **`hierocode run -t "..."`** pipeline for a whole task you
+  want planned and executed end-to-end using your Claude Pro / ChatGPT Plus
+  subscription as the $0-incremental planner and reviewer. It suits a batch of
+  small, independent changes better than one large cohesive feature.
+
+**Never apply a draft unread.** Leave `policy.auto_apply` off and read every
+diff before `/apply` — including in MCP mode, where your host agent is the
+reviewer. A weak local model will occasionally produce a diff that's
+syntactically valid and semantically wrong; catching that is the entire reason
+hierocode keeps a human (or a stronger model) in the loop instead of writing
+files on its own.
+
 ## Architecture
 
 ```
